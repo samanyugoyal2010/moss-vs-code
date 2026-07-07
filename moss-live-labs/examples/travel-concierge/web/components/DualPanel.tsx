@@ -4,6 +4,9 @@ import { useCallback, useState } from "react";
 import { useDataChannel } from "@livekit/components-react";
 import type { Doc, RetrievalPayload } from "@/lib/types";
 
+// Reused across data-channel messages to avoid allocating a decoder per update.
+const decoder = new TextDecoder();
+
 function Hits({ docs, empty }: { docs: Doc[]; empty: string }) {
   if (!docs.length) return <div className="panel-empty">{empty}</div>;
   return (
@@ -35,7 +38,7 @@ export function DualPanel() {
     "moss.retrieval",
     useCallback((msg: { payload: Uint8Array }) => {
       try {
-        setData(JSON.parse(new TextDecoder().decode(msg.payload)) as RetrievalPayload);
+        setData(JSON.parse(decoder.decode(msg.payload)) as RetrievalPayload);
       } catch (err) {
         console.error("failed to parse moss.retrieval payload", err);
       }
