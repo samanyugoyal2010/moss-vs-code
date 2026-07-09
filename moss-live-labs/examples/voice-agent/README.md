@@ -15,7 +15,7 @@ Browser (web/)  ⟷  LiveKit room  ⟷  agent.py (STT → LLM → TTS)  ⟷  Mos
 - [LiveKit](https://livekit.io) running locally (`livekit-server --dev`)
 - [OpenAI](https://platform.openai.com) (LLM), [Deepgram](https://deepgram.com)
   (speech-to-text), and [Cartesia](https://cartesia.ai) (text-to-speech) API keys
-- Python 3.14+ (`uv`) and Node 18+ (`npm`) for the web UI
+- Python 3.14+ (`uv`) and Node 18.18+ (`npm`) for the web UI
 
 ## Setup
 

@@ -19,6 +19,12 @@ export function Transcript() {
         for (const seg of segments) {
           next[seg.id] = { id: seg.id, text: seg.text, isUser: Boolean(participant?.isLocal) };
         }
+        // cap history so a long call doesn't grow memory without bound
+        const ids = Object.keys(next);
+        const MAX = 100;
+        if (ids.length > MAX) {
+          for (const id of ids.slice(0, ids.length - MAX)) delete next[id];
+        }
         return next;
       });
     };

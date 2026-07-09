@@ -8,6 +8,9 @@ const API_SECRET = process.env.LIVEKIT_API_SECRET;
 
 export const revalidate = 0;
 
+// Local-dev demo: this endpoint is intentionally unauthenticated. Before deploying
+// beyond localhost, gate it behind your own auth so it can't mint room tokens for
+// anonymous callers.
 export async function GET() {
   try {
     if (!LIVEKIT_URL) throw new Error("LIVEKIT_URL is not defined");

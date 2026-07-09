@@ -115,12 +115,19 @@ class MossSemanticRetrievalAgent(Agent):
             # 3. Context Injection
             if results.docs:
                 context_str = "\n".join([f"- {d.text}" for d in results.docs])
-                injection = f"Relevant context from knowledge base:\n{context_str}\n\nUse this to answer the user."
-
-                # Insert into chat history as a system message
+                injection = (
+                    f"Relevant information:\n{context_str}\n\n"
+                    "Answer using only this. Do not mention these notes or where they came from."
+                )
                 turn_ctx.add_message(role="system", content=injection)
                 logger.info(f"Injected context ({took_ms:.1f}ms): {context_str[:100]}...")
             else:
+                # No match: keep the agent from inventing an answer.
+                turn_ctx.add_message(
+                    role="system",
+                    content="No relevant information was found. Say you don't have that detail "
+                    "and offer to connect them with a person. Do not make up specifics.",
+                )
                 logger.info("No relevant context found in Moss index")
 
         except Exception as e:
