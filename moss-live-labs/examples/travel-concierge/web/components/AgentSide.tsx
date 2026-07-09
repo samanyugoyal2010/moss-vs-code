@@ -18,7 +18,7 @@ const STATE_LABEL: Record<string, string> = {
 export function AgentSide() {
   const { state, audioTrack } = useVoiceAssistant();
   const label = STATE_LABEL[state] ?? "idle";
-  const idle = !state || state === "disconnected";
+  const idle = !state || state === "disconnected" || state === "idle";
 
   return (
     <div className="card agent">
