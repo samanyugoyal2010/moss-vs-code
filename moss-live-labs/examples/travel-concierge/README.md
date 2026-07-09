@@ -14,7 +14,7 @@ Browser (web/)  ⟷  LiveKit room  ⟷  agent.py (STT → LLM → TTS)  ⟷  Mos
 
 ## What you need
 - A [Moss](https://moss.dev) account · [LiveKit](https://livekit.io) (local) · OpenAI (LLM),
-  Deepgram (STT), Cartesia (TTS) keys · Python 3.14+ (`uv`) and Node 18+.
+  Deepgram (STT), Cartesia (TTS) keys · Python 3.14+ (`uv`) and Node 18.18+.
 
 ## Setup
 ```bash

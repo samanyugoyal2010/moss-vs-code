@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -169,6 +170,10 @@ class TravelConciergeAgent(Agent):
 
 
 async def entrypoint(ctx: JobContext):
+    if not MOSS_PROJECT_ID or not MOSS_PROJECT_KEY:
+        raise SystemExit(
+            "Missing MOSS_PROJECT_ID / MOSS_PROJECT_KEY. Copy .env.example to .env and fill them in."
+        )
     await ctx.connect()
 
     client = MossClient(project_id=MOSS_PROJECT_ID, project_key=MOSS_PROJECT_KEY)
@@ -180,8 +185,9 @@ async def entrypoint(ctx: JobContext):
     except Exception as e:
         logger.warning(f"Catalog not found ({e}). Run seed_index.py first.")
 
-    # Short-term: a fresh, empty session just for this call.
-    session_name = f"trip-session-{datetime.now():%Y%m%d-%H%M%S}"
+    # Short-term: a fresh, empty session just for this call. The uuid suffix keeps
+    # it unique even if two calls start in the same second.
+    session_name = f"trip-session-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
     session_index = await client.session(session_name)
     logger.info(f"Opened live session: {session_name}")
 

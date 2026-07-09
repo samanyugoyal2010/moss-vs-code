@@ -27,6 +27,11 @@ CATALOG_PATH = Path(__file__).parent / "data" / "catalog.json"
 
 
 async def main() -> None:
+    if not MOSS_PROJECT_ID or not MOSS_PROJECT_KEY:
+        raise SystemExit(
+            "Missing MOSS_PROJECT_ID / MOSS_PROJECT_KEY. Copy .env.example to .env and fill them in."
+        )
+
     trips = json.loads(CATALOG_PATH.read_text())
     docs = [DocumentInfo(id=t["id"], text=t["text"]) for t in trips]
     client = MossClient(project_id=MOSS_PROJECT_ID, project_key=MOSS_PROJECT_KEY)
