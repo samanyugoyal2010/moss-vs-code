@@ -1,9 +1,10 @@
-import type { DocumentInfo, SessionIndex } from "@moss-dev/moss";
+import type { DocumentInfo } from "@moss-dev/moss";
 import * as vscode from "vscode";
+import type { LocalMossSession } from "../moss/client";
 import { chunkFile } from "./chunker";
 import { readFileForIndex, scanWorkspaceFiles, toWorkspaceRelative } from "./scanner";
 
-const BATCH_SIZE = 32;
+const BATCH_SIZE = 4;
 const YIELD_EVERY_FILES = 25;
 
 export type IndexStatus =
@@ -15,13 +16,18 @@ export type IndexStatus =
 export type StatusListener = (status: IndexStatus) => void;
 
 export class CodebaseIndexer {
-  private session: SessionIndex | undefined;
+  private session: LocalMossSession | undefined;
   private status: IndexStatus = { state: "unindexed" };
   private listeners = new Set<StatusListener>();
   private pathChunkCounts = new Map<string, number>();
   private watchers: vscode.Disposable[] = [];
   private indexing = false;
   private watchingEnabled = false;
+  private onPersist: (() => void) | undefined;
+
+  setPersistHandler(handler: (() => void) | undefined): void {
+    this.onPersist = handler;
+  }
 
   onStatus(listener: StatusListener): vscode.Disposable {
     this.listeners.add(listener);
@@ -31,6 +37,10 @@ export class CodebaseIndexer {
 
   getStatus(): IndexStatus {
     return this.status;
+  }
+
+  getPathChunkCounts(): Record<string, number> {
+    return Object.fromEntries(this.pathChunkCounts.entries());
   }
 
   isIndexed(): boolean {
@@ -48,8 +58,34 @@ export class CodebaseIndexer {
     }
   }
 
-  attachSession(session: SessionIndex): void {
+  private requestPersist(): void {
+    this.onPersist?.();
+  }
+
+  attachSession(session: LocalMossSession): void {
     this.session = session;
+  }
+
+  restoreFromMeta(pathChunkCounts: Record<string, number>): void {
+    this.pathChunkCounts.clear();
+    let chunks = 0;
+    for (const [rel, count] of Object.entries(pathChunkCounts)) {
+      if (typeof count === "number" && count > 0) {
+        this.pathChunkCounts.set(rel, count);
+        chunks += count;
+      }
+    }
+    if (this.pathChunkCounts.size === 0) {
+      this.watchingEnabled = false;
+      this.setStatus({ state: "unindexed" });
+      return;
+    }
+    this.watchingEnabled = true;
+    this.setStatus({
+      state: "ready",
+      files: this.pathChunkCounts.size,
+      chunks,
+    });
   }
 
   async rebuild(token?: vscode.CancellationToken): Promise<void> {
@@ -182,6 +218,7 @@ export class CodebaseIndexer {
     }
 
     this.refreshReadyStatus();
+    this.requestPersist();
   }
 
   async removeFile(uri: vscode.Uri): Promise<void> {
@@ -200,6 +237,7 @@ export class CodebaseIndexer {
     await this.session.deleteDocs(ids);
     this.pathChunkCounts.delete(relativePath);
     this.refreshReadyStatus();
+    this.requestPersist();
   }
 
   startWatching(disposables: vscode.Disposable[]): void {

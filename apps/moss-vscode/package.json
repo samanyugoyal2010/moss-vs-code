@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "moss-dev",
   "license": "BSD-2-Clause",
+  "icon": "media/moss_avatar_core.png",
   "engines": {
     "vscode": "^1.85.0",
     "node": ">=20"
@@ -12,9 +13,6 @@
   "categories": [
     "Other",
     "Machine Learning"
-  ],
-  "activationEvents": [
-    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -52,6 +50,10 @@
       {
         "command": "moss.credentials.configure",
         "title": "Moss: Configure Credentials"
+      },
+      {
+        "command": "moss.logs.show",
+        "title": "Moss: Show Logs"
       }
     ],
     "configuration": {

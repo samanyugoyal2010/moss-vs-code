@@ -2,18 +2,27 @@ import * as vscode from "vscode";
 import { MossSessionManager } from "./moss/client";
 import {
   clearWorkspaceIndexed,
-  isWorkspaceMarkedIndexed,
   markWorkspaceIndexed,
   promptAndStoreCredentials,
   resolveCredentials,
   workspaceSessionName,
 } from "./moss/config";
+import {
+  clearIndexCache,
+  ensureIndexCacheDir,
+  indexCacheDir,
+  indexCacheExists,
+  readIndexMeta,
+  workspaceRootPath,
+  writeIndexMeta,
+} from "./moss/persistence";
 import { CodebaseIndexer } from "./indexer/indexer";
 import { SemanticSearch, type SearchHit } from "./search/search";
 import { MossSearchViewProvider } from "./ui/sidebar";
 
 let statusBarItem: vscode.StatusBarItem | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
+let persistTimer: NodeJS.Timeout | undefined;
 
 function log(message: string): void {
   outputChannel?.appendLine(`[${new Date().toISOString()}] ${message}`);
@@ -22,8 +31,31 @@ function log(message: string): void {
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   outputChannel = vscode.window.createOutputChannel("Moss Code Search");
   context.subscriptions.push(outputChannel);
+  log("Moss Code Search activating…");
 
-  const sessionManager = new MossSessionManager();
+  context.subscriptions.push(
+    vscode.commands.registerCommand("moss.logs.show", () => {
+      outputChannel?.show(true);
+    }),
+  );
+
+  try {
+    await activateExtension(context);
+    log("Moss Code Search activated.");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(`Activation failed: ${message}`);
+    if (err instanceof Error && err.stack) {
+      log(err.stack);
+    }
+    outputChannel.show(true);
+    vscode.window.showErrorMessage(`Moss Code Search failed to start: ${message}`);
+    throw err;
+  }
+}
+
+async function activateExtension(context: vscode.ExtensionContext): Promise<void> {
+  const sessionManager = new MossSessionManager(context.extensionPath, log);
   const indexer = new CodebaseIndexer();
   const search = new SemanticSearch(
     () => (indexer.canSearch() ? sessionManager.getSession() : undefined),
@@ -38,6 +70,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   statusBarItem.command = "moss.search.focus";
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
+
+  const persistNow = async (): Promise<void> => {
+    await persistIndex(context, sessionManager, indexer);
+  };
+
+  const schedulePersist = (): void => {
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+    }
+    persistTimer = setTimeout(() => {
+      void persistNow().catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        log(`Debounced persist failed: ${message}`);
+      });
+    }, 1500);
+  };
+
+  indexer.setPersistHandler(schedulePersist);
 
   const createIndex = async (): Promise<void> => {
     await runCreateIndex(context, sessionManager, indexer, provider);
@@ -73,9 +123,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("moss.credentials.configure", async () => {
       const creds = await promptAndStoreCredentials(context);
       if (creds) {
-        provider.setStatus({ state: "unindexed" });
+        if (!indexCacheExists(context)) {
+          provider.setStatus({ state: "unindexed" });
+        }
         vscode.window.showInformationMessage(
-          "Moss credentials saved. Click Create Index in the sidebar to index this workspace.",
+          "Moss credentials saved. Click Create Index in the sidebar if this workspace is not indexed yet.",
         );
       }
     }),
@@ -93,15 +145,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push({
     dispose: () => {
+      if (persistTimer) {
+        clearTimeout(persistTimer);
+      }
       indexer.dispose();
       sessionManager.dispose();
     },
-  });
-
-  process.on("unhandledRejection", (reason) => {
-    const message = reason instanceof Error ? reason.message : String(reason);
-    log(`Unhandled rejection: ${message}`);
-    vscode.window.showErrorMessage(`Moss error: ${message}`);
   });
 
   await bootstrap(context, sessionManager, indexer, provider);
@@ -126,6 +175,32 @@ function updateStatusBar(status: import("./indexer/indexer").IndexStatus): void 
   }
 }
 
+async function persistIndex(
+  context: vscode.ExtensionContext,
+  sessionManager: MossSessionManager,
+  indexer: CodebaseIndexer,
+): Promise<void> {
+  if (!sessionManager.isReady || !indexer.isIndexed()) {
+    return;
+  }
+  const cacheDir = await ensureIndexCacheDir(context);
+  const session = sessionManager.getSession();
+  await session.saveToDisk(cacheDir);
+  const status = indexer.getStatus();
+  const files = status.state === "ready" ? status.files : 0;
+  const chunks = status.state === "ready" ? status.chunks : 0;
+  await writeIndexMeta(context, {
+    workspaceRoot: workspaceRootPath(),
+    sessionName: workspaceSessionName(),
+    files,
+    chunks,
+    pathChunkCounts: indexer.getPathChunkCounts(),
+    savedAt: new Date().toISOString(),
+  });
+  await markWorkspaceIndexed(context);
+  log(`Persisted index to ${cacheDir} (${files} files, ${chunks} chunks)`);
+}
+
 async function bootstrap(
   context: vscode.ExtensionContext,
   sessionManager: MossSessionManager,
@@ -144,37 +219,43 @@ async function bootstrap(
     return;
   }
 
-  if (!isWorkspaceMarkedIndexed(context)) {
+  const meta = await readIndexMeta(context);
+  if (!meta || Object.keys(meta.pathChunkCounts).length === 0) {
     provider.setStatus({ state: "unindexed" });
-    log(`Workspace ${workspaceSessionName()} has no index — waiting for Create Index`);
+    log(`Workspace ${workspaceSessionName()} ready — waiting for Create Index`);
     return;
   }
 
   try {
     if (statusBarItem) {
-      statusBarItem.text = "$(sync~spin) Moss: loading index…";
+      statusBarItem.text = "$(sync~spin) Moss: loading saved index…";
     }
+    log(`Restoring index from ${indexCacheDir(context)}`);
     const session = await sessionManager.initialize(credentials);
     indexer.attachSession(session);
-    indexer.startWatching(context.subscriptions);
-
-    const docCount = session.docCount ?? 0;
-    if (docCount > 0) {
-      indexer.markReadyFromSession(docCount, docCount);
-      log(`Resumed existing index with ${docCount} chunks`);
-      return;
+    const loaded = await session.loadFromDisk(indexCacheDir(context));
+    if (loaded <= 0 && session.docCount <= 0) {
+      throw new Error("Saved index was empty");
     }
-
-    await clearWorkspaceIndexed(context);
-    provider.setStatus({ state: "unindexed" });
-    log("Marked index missing in session — Create Index required");
+    indexer.restoreFromMeta(meta.pathChunkCounts);
+    indexer.startWatching(context.subscriptions);
+    await markWorkspaceIndexed(context);
+    log(
+      `Restored index for ${workspaceSessionName()} — ${meta.files} files, ${meta.chunks} chunks (loaded=${loaded}, docCount=${session.docCount})`,
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(`Bootstrap failed: ${message}`);
+    log(`Restore failed: ${message}`);
     await clearWorkspaceIndexed(context);
+    await clearIndexCache(context).catch(() => undefined);
+    sessionManager.dispose();
+    indexer.restoreFromMeta({});
     provider.setStatus({ state: "unindexed" });
+    if (statusBarItem) {
+      statusBarItem.text = "$(database) Moss: not indexed";
+    }
     vscode.window.showWarningMessage(
-      `Moss could not load a previous index. Click Create Index to try again. (${message})`,
+      `Moss could not restore the saved index. Click Create Index to rebuild. (${message})`,
     );
   }
 }
@@ -237,12 +318,12 @@ async function runCreateIndex(
     );
 
     if (indexer.isIndexed()) {
-      await markWorkspaceIndexed(context);
+      await persistIndex(context, sessionManager, indexer);
       const status = indexer.getStatus();
       const files = status.state === "ready" ? status.files : 0;
       log(`Index created for ${workspaceSessionName()}`);
       vscode.window.showInformationMessage(
-        `Moss index ready — ${files} files indexed.`,
+        `Moss index ready — ${files} files indexed (saved for next time).`,
       );
     }
   } catch (err) {

@@ -1,4 +1,5 @@
-import type { QueryResultDocumentInfo, SessionIndex } from "@moss-dev/moss";
+import type { QueryResultDocumentInfo } from "@moss-dev/moss";
+import type { LocalMossSession } from "../moss/client";
 import { getSearchOptions } from "../moss/config";
 
 export interface SearchHit {
@@ -43,7 +44,7 @@ export function mapHit(doc: QueryResultDocumentInfo): SearchHit {
 
 export class SemanticSearch {
   constructor(
-    private getSession: () => SessionIndex | undefined,
+    private getSession: () => LocalMossSession | undefined,
     private canSearch: () => boolean,
   ) {}
 

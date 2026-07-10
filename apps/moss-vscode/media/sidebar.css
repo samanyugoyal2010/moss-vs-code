@@ -1,7 +1,12 @@
 :root {
   color-scheme: light dark;
-  --moss-gap: 8px;
-  --moss-radius: 4px;
+  --moss-gap: 10px;
+  --moss-radius: 6px;
+  --moss-ink: #141915;
+  --moss-paper: #f2f2f2;
+  --moss-accent: var(--vscode-button-background, #141915);
+  --moss-accent-fg: var(--vscode-button-foreground, #f2f2f2);
+  --moss-border: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
 }
 
 * {
@@ -26,9 +31,49 @@ body {
   height: 100vh;
 }
 
+.brand-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 4px;
+}
+
+.brand-wordmark {
+  display: block;
+  height: 28px;
+  width: auto;
+  max-width: 140px;
+  object-fit: contain;
+}
+
+.brand-wordmark-light {
+  display: none;
+}
+
+.brand-wordmark-dark {
+  display: block;
+}
+
+body.vscode-dark .brand-wordmark-light,
+body.vscode-high-contrast .brand-wordmark-light {
+  display: block;
+}
+
+body.vscode-dark .brand-wordmark-dark,
+body.vscode-high-contrast .brand-wordmark-dark {
+  display: none;
+}
+
+.brand-tagline {
+  margin: 0;
+  font-size: 11px;
+  opacity: 0.72;
+  letter-spacing: 0.01em;
+}
+
 .index-panel {
-  padding: 10px;
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  padding: 12px;
+  border: 1px solid var(--moss-border);
   border-radius: var(--moss-radius);
   background: var(--vscode-editor-background);
 }
@@ -42,17 +87,24 @@ body {
 
 .primary-btn {
   width: 100%;
-  padding: 8px 12px;
-  border: none;
+  padding: 9px 12px;
+  border: 1px solid transparent;
   border-radius: var(--moss-radius);
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
+  background: var(--moss-accent);
+  color: var(--moss-accent-fg);
   cursor: pointer;
   font: inherit;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 .primary-btn:hover:not(:disabled) {
-  background: var(--vscode-button-hoverBackground);
+  background: var(--vscode-button-hoverBackground, #2a2f2b);
+}
+
+.primary-btn:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, #141915);
+  outline-offset: 2px;
 }
 
 .primary-btn:disabled {
@@ -72,7 +124,7 @@ body {
 
 #query {
   flex: 1;
-  padding: 6px 8px;
+  padding: 8px 10px;
   border: 1px solid var(--vscode-input-border, transparent);
   border-radius: var(--moss-radius);
   background: var(--vscode-input-background);
@@ -82,12 +134,33 @@ body {
 
 #query:focus {
   border-color: var(--vscode-focusBorder);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 1.2em;
+}
+
+.status-avatar {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  object-fit: cover;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.status-avatar.visible {
+  opacity: 1;
 }
 
 #status {
   font-size: 11px;
   opacity: 0.8;
-  min-height: 1.2em;
 }
 
 #results {
@@ -102,9 +175,9 @@ body {
   display: block;
   width: 100%;
   text-align: left;
-  padding: 8px;
+  padding: 8px 10px;
   margin-bottom: 6px;
-  border: none;
+  border: 1px solid transparent;
   border-radius: var(--moss-radius);
   background: var(--vscode-list-inactiveSelectionBackground, transparent);
   color: inherit;
@@ -113,6 +186,7 @@ body {
 
 .result:hover {
   background: var(--vscode-list-hoverBackground);
+  border-color: var(--moss-border);
 }
 
 .result-header {
@@ -131,6 +205,7 @@ body {
   flex-shrink: 0;
   font-size: 11px;
   opacity: 0.75;
+  font-variant-numeric: tabular-nums;
 }
 
 .preview {

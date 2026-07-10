@@ -79,19 +79,33 @@ export class MossSearchViewProvider implements vscode.WebviewViewProvider {
     const cssUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, "media", "sidebar.css"),
     );
+    const wordmarkLightUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, "media", "moss_wordmark_light.png"),
+    );
+    const wordmarkDarkUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, "media", "moss_wordmark_dark.png"),
+    );
+    const avatarUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, "media", "moss_avatar_core.png"),
+    );
     const nonce = getNonce();
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; img-src ${webview.cspSource} data:; script-src 'nonce-${nonce}';" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="${cssUri}" />
   <title>Moss Search</title>
 </head>
 <body>
   <div class="container">
+    <header class="brand-header">
+      <img class="brand-wordmark brand-wordmark-dark" src="${wordmarkDarkUri}" alt="Moss" />
+      <img class="brand-wordmark brand-wordmark-light" src="${wordmarkLightUri}" alt="Moss" />
+    </header>
+    <p class="brand-tagline">Semantic code search</p>
     <div id="index-panel" class="index-panel">
       <p class="index-hint">Index this workspace to enable semantic search.</p>
       <button id="create-index" type="button" class="primary-btn">Create Index</button>
@@ -99,13 +113,17 @@ export class MossSearchViewProvider implements vscode.WebviewViewProvider {
     <div class="search-row">
       <input id="query" type="search" placeholder="Semantic search…" autocomplete="off" disabled />
     </div>
-    <div id="status">Not indexed</div>
+    <div class="status-row">
+      <img id="status-avatar" class="status-avatar" src="${avatarUri}" alt="" />
+      <div id="status">Not indexed</div>
+    </div>
     <ul id="results"></ul>
   </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const input = document.getElementById('query');
     const statusEl = document.getElementById('status');
+    const statusAvatar = document.getElementById('status-avatar');
     const resultsEl = document.getElementById('results');
     const indexPanel = document.getElementById('index-panel');
     const createBtn = document.getElementById('create-index');
@@ -136,6 +154,7 @@ export class MossSearchViewProvider implements vscode.WebviewViewProvider {
       createBtn.disabled = indexing;
       createBtn.textContent = indexing ? 'Indexing…' : 'Create Index';
       statusEl.textContent = formatStatus(status);
+      statusAvatar.classList.toggle('visible', !!ready);
       if (!ready && !input.value.trim()) {
         renderHits([]);
       }
@@ -208,6 +227,7 @@ export class MossSearchViewProvider implements vscode.WebviewViewProvider {
       }
       if (msg.type === 'error') {
         statusEl.textContent = 'Search error: ' + msg.error;
+        statusAvatar.classList.remove('visible');
       }
     });
 

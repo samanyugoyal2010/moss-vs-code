@@ -4,9 +4,12 @@ const watch = process.argv.includes("--watch");
 
 /** @type {import('esbuild').BuildOptions} */
 const options = {
-  entryPoints: ["src/extension.ts"],
+  entryPoints: {
+    extension: "src/extension.ts",
+    mossWorker: "src/worker/mossWorker.ts",
+  },
   bundle: true,
-  outfile: "dist/extension.js",
+  outdir: "dist",
   external: [
     "vscode",
     "@moss-dev/moss",

@@ -1,13 +1,18 @@
+<p align="center">
+  <img src="media/moss_avatar_core.png" alt="Moss" width="96" />
+</p>
+
 # Moss Code Search (VS Code)
 
 Semantic search over your open workspace, powered by [Moss](https://moss.dev) — local-first, sub-10ms retrieval via `SessionIndex`.
 
 ## Features
 
-- **Manual indexing** — click **Create Index** in the sidebar (no auto-index on open)
+- **Manual indexing** — click **Create Index** in the sidebar the first time
+- **Persisted indexes** — reopening the same folder restores the saved index (no full rebuild)
 - Sidebar with live (debounced) semantic search after indexing
 - Click a result to jump to file + line
-- Incremental re-index on save / create / delete / rename
+- Incremental re-index on save / create / delete / rename (also saved to disk)
 - Credentials via `.env`, VS Code settings, or Secret Storage
 
 ## Setup
@@ -35,6 +40,7 @@ Or from the Command Palette after installing a `.vsix`:
 | `Moss: Create Index` | Index the open workspace (required before search) |
 | `Moss: Rebuild Index` | Re-scan and re-index the workspace |
 | `Moss: Configure Credentials` | Store project ID / key in Secret Storage |
+| `Moss: Show Logs` | Open the Moss Code Search output channel |
 
 ## Settings
 
@@ -45,6 +51,8 @@ Or from the Command Palette after installing a `.vsix`:
 
 ## Architecture
 
-Extension host owns a Moss `SessionIndex` named `vscode-{workspaceHash}`. Files are chunked into `DocumentInfo` records (`{path}#chunk-{n}`) with metadata for navigation. Queries run in-process against the local session.
+Extension host owns UI and file scanning. Moss native runtime runs in a separate Node worker (`dist/mossWorker.js`) so a native crash cannot take down VS Code. Sessions are named `vscode-{workspaceHash}`. Files are chunked into `DocumentInfo` records (`{path}#chunk-{n}`) with metadata for navigation.
 
-Native modules (`@moss-dev/moss`, `@moss-dev/moss-core`) are left external by esbuild and loaded from `node_modules` at runtime.
+After **Create Index**, the session is written with Moss `saveToDisk` under the extension global storage (`indexes/{workspaceHash}/`), plus a `meta.json` map of file → chunk counts. Reopening that folder loads the cache with `loadFromDisk` so search works immediately. Use **Moss: Rebuild Index** to force a full reindex.
+
+Native modules (`@moss-dev/moss`, `@moss-dev/moss-core`) are left external by esbuild and loaded from `node_modules` at runtime in the worker.
