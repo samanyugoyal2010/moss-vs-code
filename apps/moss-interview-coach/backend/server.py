@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""System Design Interview Coach — FastAPI + Pipecat SmallWebRTC + Moss.
+"""Interview Coach — FastAPI + Pipecat SmallWebRTC + Moss.
 
 Only cloud credentials required: MOSS_PROJECT_ID / MOSS_PROJECT_KEY.
 STT = local Whisper, TTS = local Piper, LLM = local Ollama.
@@ -11,8 +11,10 @@ import asyncio
 import json
 import os
 import re
+import sys
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -61,27 +63,45 @@ from pipecat.transports.smallwebrtc.request_handler import (
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 from pipecat.workers.runner import WorkerRunner
 
+from tracks import (
+    DEFAULT_TRACK_ID,
+    INTERVIEW_TRACKS,
+    all_index_names,
+    normalize_track_id,
+    track_index_name,
+)
+
 load_dotenv()
 
-INDEX_NAME = os.getenv("MOSS_INDEX_NAME", "system-design-rubric")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
+OLLAMA_GRADE_MODEL = os.getenv("OLLAMA_GRADE_MODEL", OLLAMA_MODEL)
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")
 PIPER_VOICE = os.getenv("PIPER_VOICE", "en_US-lessac-medium")
+GRADER_WORKER_PATH = Path(__file__).resolve().parent / "grader_worker.py"
+GRADE_SUBPROCESS_TIMEOUT_SECS = float(os.getenv("GRADE_SUBPROCESS_TIMEOUT_SECS", "60"))
 
-BASE_SYSTEM_PROMPT = (
-    "You are an expert System Design Interview Coach conducting a live voice interview. "
-    "Ask probing follow-ups, push for trade-offs, and keep answers concise enough to speak aloud. "
+COACH_BEHAVIOR = (
+    "Conduct a live voice interview. Ask probing follow-ups, push for trade-offs, "
+    "and keep answers concise enough to speak aloud. "
     "Avoid markdown, bullets, and emojis. "
-    "When the candidate finishes a substantive design answer: speak your short follow-up question "
+    "When the candidate finishes a substantive answer: speak your short follow-up question "
     "in the same turn, and also call grade_candidate_answer with their answer text. "
     "Skip the tool for greetings, topic picks, or one-word clarifications. "
     "Never speak scores, grades, or improvement tips aloud — the assist panel shows those. "
     "Ignore tool/grade system notes; they are only for the assist panel."
 )
 
+
+def build_system_prompt(track_id: str) -> str:
+    track = INTERVIEW_TRACKS[normalize_track_id(track_id)]
+    return f"{track['focus']} {COACH_BEHAVIOR}"
+
+
 moss_client: MossClient | None = None
+# Track id → whether that track's Moss index is loaded locally.
+moss_indexes_ready: dict[str, bool] = {tid: False for tid in INTERVIEW_TRACKS}
 moss_ready = False
 active_bots = 0
 
@@ -133,12 +153,14 @@ class MossContextInjector(FrameProcessor):
         self,
         client: MossClient,
         *,
-        index_name: str = INDEX_NAME,
+        system_prompt: str,
+        index_name: str,
         top_k: int = 1,
         alpha: float = 0.6,
     ) -> None:
         super().__init__()
         self._client = client
+        self._system_prompt = system_prompt
         self._index_name = index_name
         self._top_k = top_k
         self._alpha = alpha
@@ -188,7 +210,7 @@ class MossContextInjector(FrameProcessor):
             f"Matched topic id={top.id} score={top.score:.3f}\n"
             f"{top.text}"
         )
-        _upsert_system_message(frame.context, f"{BASE_SYSTEM_PROMPT}\n\n{rubric_block}")
+        _upsert_system_message(frame.context, f"{self._system_prompt}\n\n{rubric_block}")
         logger.info(
             f"Moss retrieved '{top.id}' in {self.last_moss_ms:.2f} ms "
             f"(score={top.score:.3f})"
@@ -280,9 +302,9 @@ async def grade_candidate_answer(
     answer: str,
     question: str | None = None,
 ) -> None:
-    """Grade a candidate's substantive system design answer against the Moss rubric.
+    """Grade a candidate's substantive interview answer against the Moss rubric.
 
-    Call this when the candidate finishes a substantive design answer (not for
+    Call this when the candidate finishes a substantive answer (not for
     greetings, topic picks, or one-word clarifications). Do not narrate the score
     or tips aloud — the assist panel shows feedback.
 
@@ -293,6 +315,8 @@ async def grade_candidate_answer(
     resources = params.app_resources or {}
     moss: MossContextInjector | None = resources.get("moss")
     assist: InterviewAssistState | None = resources.get("assist")
+    track_meta: dict[str, str] = resources.get("track") or INTERVIEW_TRACKS[DEFAULT_TRACK_ID]
+    track_label = track_meta.get("label", "Interview")
 
     answer_text = (answer or "").strip()
     if not answer_text and moss and moss.last_user_answer:
@@ -308,7 +332,7 @@ async def grade_candidate_answer(
         return
 
     question_text = (question or "").strip() or (
-        (assist.last_question if assist else None) or "General system design answer"
+        (assist.last_question if assist else None) or f"General {track_label} answer"
     )
     rubric_id = moss.last_rubric_id if moss else None
     rubric_text = moss.last_rubric_text if moss else None
@@ -351,27 +375,20 @@ async def grade_candidate_answer(
                 if not assist.grading_still_current(turn_id):
                     return
                 try:
-                    result = await _silent_grade_answer(
+                    result = await _grade_in_subprocess(
                         question=question_text,
                         answer=answer_text,
                         rubric_id=rubric_id,
                         rubric_text=rubric_text,
+                        track_label=track_label,
+                        grader_persona=track_meta.get(
+                            "grader_persona",
+                            "strict technical interview grader",
+                        ),
                     )
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning(f"Background grader failed: {exc}")
-                    result = GradeResult(
-                        topic=rubric_id,
-                        score=3,
-                        summary=(
-                            "Could not grade this turn automatically. "
-                            "Keep covering trade-offs."
-                        ),
-                        tips=[
-                            "State assumptions out loud before diving into components.",
-                            "Compare at least two design alternatives with trade-offs.",
-                            "Call out bottlenecks and how you would scale them.",
-                        ],
-                    )
+                    logger.warning(f"Background grader subprocess failed: {exc}")
+                    result = _fallback_grade_result(rubric_id)
             if not assist.grading_still_current(turn_id):
                 return
             grade_payload = result.model_dump()
@@ -429,26 +446,36 @@ def _extract_question(
     return parts[-1] if parts else text
 
 
-def _parse_grade_json(raw: str) -> GradeResult:
-    cleaned = raw.strip()
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
-    if fence:
-        cleaned = fence.group(1)
-    else:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start >= 0 and end > start:
-            cleaned = cleaned[start : end + 1]
+def _fallback_grade_result(rubric_id: str | None) -> GradeResult:
+    return GradeResult(
+        topic=rubric_id,
+        score=3,
+        summary="Could not grade this turn automatically. Keep covering trade-offs.",
+        tips=[
+            "State assumptions out loud before diving into components.",
+            "Compare at least two design alternatives with trade-offs.",
+            "Call out bottlenecks and how you would scale them.",
+        ],
+    )
 
-    data = json.loads(cleaned)
+
+def _grade_result_from_worker_payload(
+    data: dict[str, Any],
+    *,
+    rubric_id: str | None,
+) -> GradeResult:
     score = int(data.get("score", 3))
     score = max(1, min(5, score))
     tips_raw = data.get("tips") or []
     tips = [str(t).strip() for t in tips_raw if str(t).strip()][:4]
+    topic = str(data["topic"]) if data.get("topic") else rubric_id
     return GradeResult(
-        topic=str(data["topic"]) if data.get("topic") else None,
+        topic=topic,
         score=score,
-        summary=str(data.get("summary") or "Review the rubric points for this topic.").strip(),
+        max_score=int(data.get("max_score") or 5),
+        summary=str(
+            data.get("summary") or "Review the rubric points for this topic."
+        ).strip(),
         tips=tips
         or [
             "Call out concrete trade-offs.",
@@ -457,42 +484,59 @@ def _parse_grade_json(raw: str) -> GradeResult:
     )
 
 
-async def _silent_grade_answer(
+async def _grade_in_subprocess(
     *,
     question: str,
     answer: str,
     rubric_id: str | None,
     rubric_text: str | None,
+    track_label: str,
+    grader_persona: str,
 ) -> GradeResult:
-    rubric = rubric_text or "General system design grading rubric: clarity, trade-offs, scalability."
-    prompt = (
-        "You are a strict system design interview grader. "
-        "Return ONLY valid JSON with keys: score (1-5 integer), summary (one sentence), "
-        "tips (array of 2-4 short improvement strings), topic (string).\n\n"
-        f"Topic id: {rubric_id or 'unknown'}\n"
-        f"Rubric:\n{rubric}\n\n"
-        f"Interview question:\n{question}\n\n"
-        f"Candidate answer:\n{answer}\n"
+    """Run grading in a separate Python process so it never shares the coach loop."""
+    if not GRADER_WORKER_PATH.is_file():
+        raise FileNotFoundError(f"Grader worker missing: {GRADER_WORKER_PATH}")
+
+    job = {
+        "question": question,
+        "answer": answer,
+        "rubric_id": rubric_id,
+        "rubric_text": rubric_text,
+        "track_label": track_label,
+        "grader_persona": grader_persona,
+        "model": OLLAMA_GRADE_MODEL,
+        "base_url": OLLAMA_BASE_URL,
+    }
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(GRADER_WORKER_PATH),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        resp = await client.post(
-            f"{OLLAMA_BASE_URL}/chat/completions",
-            json={
-                "model": OLLAMA_MODEL,
-                "temperature": 0.2,
-                "messages": [
-                    {"role": "system", "content": "Respond with JSON only. No markdown."},
-                    {"role": "user", "content": prompt},
-                ],
-            },
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(json.dumps(job).encode("utf-8")),
+            timeout=GRADE_SUBPROCESS_TIMEOUT_SECS,
         )
-        resp.raise_for_status()
-        payload = resp.json()
-        content = payload["choices"][0]["message"]["content"]
-    result = _parse_grade_json(content)
-    if rubric_id and not result.topic:
-        result.topic = rubric_id
-    return result
+    except asyncio.TimeoutError as exc:
+        proc.kill()
+        await proc.wait()
+        raise TimeoutError(
+            f"Grader subprocess timed out after {GRADE_SUBPROCESS_TIMEOUT_SECS:.0f}s"
+        ) from exc
+
+    err_text = (stderr or b"").decode("utf-8", errors="replace").strip()
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"grader_worker exit={proc.returncode}"
+            + (f": {err_text}" if err_text else "")
+        )
+
+    payload = json.loads((stdout or b"").decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("grader_worker returned non-object JSON")
+    return _grade_result_from_worker_payload(payload, rubric_id=rubric_id)
 
 
 def _last_user_text(context: LLMContext) -> str | None:
@@ -540,10 +584,21 @@ def _resolve_whisper_model(name: str) -> str | WhisperModel:
     return mapping.get(key, name)
 
 
-async def run_interview_bot(webrtc_connection: SmallWebRTCConnection) -> None:
+async def run_interview_bot(
+    webrtc_connection: SmallWebRTCConnection,
+    track_id: str = DEFAULT_TRACK_ID,
+) -> None:
     global active_bots
-    if moss_client is None or not moss_ready:
-        raise RuntimeError("Moss client is not ready. Run ingest_knowledge.py first.")
+    track_id = normalize_track_id(track_id)
+    if moss_client is None or not moss_indexes_ready.get(track_id):
+        raise RuntimeError(
+            f"Moss index for track '{track_id}' is not ready. "
+            "Run ingest_knowledge.py first."
+        )
+
+    track = INTERVIEW_TRACKS[track_id]
+    index_name = track["index_name"]
+    system_prompt = build_system_prompt(track_id)
 
     active_bots += 1
     try:
@@ -563,18 +618,22 @@ async def run_interview_bot(webrtc_connection: SmallWebRTCConnection) -> None:
             base_url=OLLAMA_BASE_URL,
             settings=OLLamaLLMService.Settings(
                 model=OLLAMA_MODEL,
-                system_instruction=BASE_SYSTEM_PROMPT,
+                system_instruction=system_prompt,
             ),
         )
         tts = PiperTTSService(
             settings=PiperTTSService.Settings(voice=PIPER_VOICE),
         )
 
-        moss_injector = MossContextInjector(moss_client, index_name=INDEX_NAME)
+        moss_injector = MossContextInjector(
+            moss_client,
+            system_prompt=system_prompt,
+            index_name=index_name,
+        )
         assist_state = InterviewAssistState()
 
         context = LLMContext(
-            messages=[{"role": "system", "content": BASE_SYSTEM_PROMPT}],
+            messages=[{"role": "system", "content": system_prompt}],
             tools=[grade_candidate_answer],
         )
         user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
@@ -609,21 +668,27 @@ async def run_interview_bot(webrtc_connection: SmallWebRTCConnection) -> None:
             app_resources={
                 "moss": moss_injector,
                 "assist": assist_state,
+                "track": track,
             },
         )
 
         @transport.event_handler("on_client_connected")
         async def on_client_connected(transport: SmallWebRTCTransport, client: Any) -> None:
-            logger.info("Client connected over SmallWebRTC")
+            logger.info(f"Client connected over SmallWebRTC (track={track_id})")
             await asyncio.sleep(0.6)
-            welcome = (
-                "Welcome to your system design interview. "
-                "Pick a topic—WhatsApp, rate limiting, sharding, CDNs, or the CAP theorem—"
-                "and we will dive in."
-            )
+            welcome = track["welcome"]
             assist_state.bot_buf = [welcome + " "]
             assist_state.last_question = _extract_question(
                 welcome, prefer_interrogative=False
+            )
+            await worker.queue_frame(
+                RTVIServerMessageFrame(
+                    data={
+                        "type": "interview_track",
+                        "track_id": track_id,
+                        "label": track["label"],
+                    }
+                )
             )
             if assist_state.last_question:
                 await worker.queue_frame(
@@ -649,7 +714,7 @@ async def run_interview_bot(webrtc_connection: SmallWebRTCConnection) -> None:
 
 
 async def ensure_moss_loaded() -> None:
-    global moss_client, moss_ready
+    global moss_client, moss_ready, moss_indexes_ready
     project_id = os.getenv("MOSS_PROJECT_ID", "").strip()
     project_key = os.getenv("MOSS_PROJECT_KEY", "").strip()
     if not project_id or not project_key:
@@ -657,16 +722,24 @@ async def ensure_moss_loaded() -> None:
         return
 
     moss_client = MossClient(project_id, project_key)
-    try:
-        await moss_client.load_index(INDEX_NAME)
-        moss_ready = True
-        logger.info(f"Moss index '{INDEX_NAME}' loaded.")
-    except Exception as exc:  # noqa: BLE001
-        moss_ready = False
-        logger.error(
-            f"Failed to load Moss index '{INDEX_NAME}': {exc}. "
-            "Run `python ingest_knowledge.py` first."
-        )
+    ready: dict[str, bool] = {}
+    for track_id, meta in INTERVIEW_TRACKS.items():
+        index_name = meta["index_name"]
+        try:
+            await moss_client.load_index(index_name)
+            ready[track_id] = True
+            logger.info(f"Moss index '{index_name}' loaded (track={track_id}).")
+        except Exception as exc:  # noqa: BLE001
+            ready[track_id] = False
+            logger.error(
+                f"Failed to load Moss index '{index_name}' (track={track_id}): {exc}. "
+                "Run `python ingest_knowledge.py` first."
+            )
+    moss_indexes_ready = ready
+    moss_ready = any(ready.values())
+    if moss_ready and not all(ready.values()):
+        missing = [tid for tid, ok in ready.items() if not ok]
+        logger.warning(f"Some interview tracks are unavailable until re-ingest: {missing}")
 
 
 @asynccontextmanager
@@ -675,7 +748,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="System Design Interview Coach", lifespan=lifespan)
+app = FastAPI(title="Interview Coach", lifespan=lifespan)
 
 cors_origins = [
     origin.strip()
@@ -708,28 +781,63 @@ async def health() -> dict[str, Any]:
     return {
         "ok": moss_ready and ollama_ok,
         "moss_ready": moss_ready,
-        "moss_index": INDEX_NAME,
+        "moss_indexes": {
+            track_id: {
+                "index_name": meta["index_name"],
+                "ready": moss_indexes_ready.get(track_id, False),
+            }
+            for track_id, meta in INTERVIEW_TRACKS.items()
+        },
+        "moss_index_names": all_index_names(),
         "ollama_ok": ollama_ok,
         "ollama_error": ollama_error,
         "ollama_model": OLLAMA_MODEL,
+        "ollama_grade_model": OLLAMA_GRADE_MODEL,
         "whisper_model": WHISPER_MODEL,
         "piper_voice": PIPER_VOICE,
+        "grader_worker": GRADER_WORKER_PATH.is_file(),
         "active_bots": active_bots,
+    }
+
+
+@app.get("/api/tracks")
+async def list_tracks() -> dict[str, Any]:
+    return {
+        "tracks": [
+            {
+                "id": track_id,
+                "label": meta["label"],
+                "index_name": meta["index_name"],
+                "ready": moss_indexes_ready.get(track_id, False),
+            }
+            for track_id, meta in INTERVIEW_TRACKS.items()
+        ],
+        "default": DEFAULT_TRACK_ID,
     }
 
 
 @app.post("/api/offer")
 async def offer(request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
-    if not moss_ready:
+    track_id = normalize_track_id(request.query_params.get("topic"))
+    if not moss_indexes_ready.get(track_id):
+        index_name = track_index_name(track_id)
         raise HTTPException(
             status_code=503,
-            detail="Moss index not loaded. Run ingest_knowledge.py and restart the server.",
+            detail=(
+                f"Moss index '{index_name}' for track '{track_id}' is not loaded. "
+                "Run ingest_knowledge.py and restart the server."
+            ),
+        )
+    if not GRADER_WORKER_PATH.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Grader worker missing at {GRADER_WORKER_PATH.name}.",
         )
 
     body = await request.json()
 
     async def webrtc_connection_callback(connection: SmallWebRTCConnection) -> None:
-        background_tasks.add_task(run_interview_bot, connection)
+        background_tasks.add_task(run_interview_bot, connection, track_id)
 
     try:
         answer = await small_webrtc_handler.handle_web_request(

@@ -6,6 +6,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 type SessionState = "idle" | "connecting" | "active";
 
+type InterviewTrackId =
+  | "system-design"
+  | "agent-native-infrastructure"
+  | "machine-learning-concepts";
+
+type InterviewTrack = {
+  id: InterviewTrackId;
+  label: string;
+  blurb: string;
+};
+
 type GradeFeedback = {
   topic: string | null;
   score: number;
@@ -29,6 +40,24 @@ const EMPTY_ASSIST: AssistPanelState = {
   gradingTurnId: null,
   feedback: null,
 };
+
+const INTERVIEW_TRACKS: InterviewTrack[] = [
+  {
+    id: "system-design",
+    label: "System Design",
+    blurb: "Distributed systems, APIs, scale, and reliability.",
+  },
+  {
+    id: "agent-native-infrastructure",
+    label: "Agent-Native Infrastructure",
+    blurb: "Agent runtimes, tools, memory, orchestration, and evals.",
+  },
+  {
+    id: "machine-learning-concepts",
+    label: "Machine Learning Concepts",
+    blurb: "ML fundamentals, evaluation, training, and model systems.",
+  },
+];
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 
@@ -70,6 +99,8 @@ export default function HomePage() {
   const [localLevel, setLocalLevel] = useState(0);
   const [remoteLevel, setRemoteLevel] = useState(0);
   const [assist, setAssist] = useState<AssistPanelState>(EMPTY_ASSIST);
+  const [selectedTrack, setSelectedTrack] = useState<InterviewTrackId | null>(null);
+  const [activeTrackLabel, setActiveTrackLabel] = useState<string | null>(null);
 
   const clientRef = useRef<PipecatClient | null>(null);
   const botAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -78,6 +109,11 @@ export default function HomePage() {
   const handleServerMessage = useCallback((raw: unknown) => {
     const msg = parseDataPayload(raw);
     if (!msg) return;
+
+    if (msg.type === "interview_track" && typeof msg.label === "string") {
+      setActiveTrackLabel(msg.label);
+      return;
+    }
 
     if (msg.type === "interruption" && msg.interrupted) {
       setInterruptCount((c) => c + 1);
@@ -171,6 +207,7 @@ export default function HomePage() {
     setLocalLevel(0);
     setRemoteLevel(0);
     setAssist(EMPTY_ASSIST);
+    setActiveTrackLabel(null);
     botTranscriptBuf.current = "";
     if (botAudioRef.current) {
       botAudioRef.current.pause();
@@ -185,22 +222,41 @@ export default function HomePage() {
     }
   }, []);
 
-  const startInterview = useCallback(async () => {
+  const startInterview = useCallback(async (trackId: InterviewTrackId) => {
     setError(null);
     setSession("connecting");
     setInterruptCount(0);
     setLocalLevel(0);
     setRemoteLevel(0);
     setAssist(EMPTY_ASSIST);
+    setActiveTrackLabel(
+      INTERVIEW_TRACKS.find((t) => t.id === trackId)?.label ?? trackId,
+    );
     botTranscriptBuf.current = "";
 
     try {
       const health = await fetch(`${BACKEND_URL}/health`);
       if (health.ok) {
-        const body = (await health.json()) as { moss_ready?: boolean };
+        const body = (await health.json()) as {
+          moss_ready?: boolean;
+          grader_worker?: boolean;
+          moss_indexes?: Record<string, { index_name?: string; ready?: boolean }>;
+        };
         if (body.moss_ready === false) {
           throw new Error(
-            "Moss index not loaded. Run ingest_knowledge.py and restart the backend.",
+            "Moss indexes not loaded. Run ingest_knowledge.py and restart the backend.",
+          );
+        }
+        const trackIndex = body.moss_indexes?.[trackId];
+        if (trackIndex && trackIndex.ready === false) {
+          const name = trackIndex.index_name ?? trackId;
+          throw new Error(
+            `Moss index "${name}" is not loaded for this track. Run ingest_knowledge.py --recreate and restart the backend.`,
+          );
+        }
+        if (body.grader_worker === false) {
+          throw new Error(
+            "Grader worker is missing on the backend (grader_worker.py).",
           );
         }
       }
@@ -221,6 +277,7 @@ export default function HomePage() {
             setLocalLevel(0);
             setRemoteLevel(0);
             setAssist(EMPTY_ASSIST);
+            setActiveTrackLabel(null);
             botTranscriptBuf.current = "";
             if (botAudioRef.current) {
               botAudioRef.current.pause();
@@ -285,7 +342,7 @@ export default function HomePage() {
       clientRef.current = client;
       await client.initDevices();
       await client.connect({
-        webrtcUrl: `${BACKEND_URL}/api/offer`,
+        webrtcUrl: `${BACKEND_URL}/api/offer?topic=${encodeURIComponent(trackId)}`,
       });
       setSession("active");
 
@@ -295,6 +352,7 @@ export default function HomePage() {
     } catch (err) {
       clientRef.current = null;
       setSession("idle");
+      setActiveTrackLabel(null);
       setError(err instanceof Error ? err.message : "Unable to start interview");
     }
   }, [attachBotAudio, handleServerMessage]);
@@ -324,10 +382,19 @@ export default function HomePage() {
         }}
       />
 
-      {session === "idle" && <IdleView onStart={() => void startInterview()} error={error} />}
+      {session === "idle" && (
+        <IdleView
+          tracks={INTERVIEW_TRACKS}
+          selectedTrack={selectedTrack}
+          onSelectTrack={setSelectedTrack}
+          onStart={(trackId) => void startInterview(trackId)}
+          error={error}
+        />
+      )}
       {session === "connecting" && <ConnectingView />}
       {session === "active" && (
         <ActiveInterview
+          trackLabel={activeTrackLabel}
           interruptCount={interruptCount}
           interruptFlash={interruptFlash}
           aiTalking={ringAi}
@@ -341,7 +408,19 @@ export default function HomePage() {
   );
 }
 
-function IdleView({ onStart, error }: { onStart: () => void; error: string | null }) {
+function IdleView({
+  tracks,
+  selectedTrack,
+  onSelectTrack,
+  onStart,
+  error,
+}: {
+  tracks: InterviewTrack[];
+  selectedTrack: InterviewTrackId | null;
+  onSelectTrack: (id: InterviewTrackId) => void;
+  onStart: (id: InterviewTrackId) => void;
+  error: string | null;
+}) {
   return (
     <section className="relative z-10 mx-auto flex min-h-[80vh] max-w-3xl flex-col justify-center">
       <p className="mb-4 text-xs font-semibold tracking-[0.28em] text-[var(--accent)] uppercase">
@@ -351,18 +430,57 @@ function IdleView({ onStart, error }: { onStart: () => void; error: string | nul
         Moss Interview Coach
       </h1>
       <p className="mt-6 max-w-xl text-lg leading-relaxed text-[var(--fog)] md:text-xl">
-        A real-time system design voice coach. Rubrics land from Moss in milliseconds — Whisper,
-        Piper, and Ollama stay fully local. Only Moss keys required.
+        Choose a track, then start a live voice interview. Rubrics land from Moss in milliseconds —
+        Whisper, Piper, and Ollama stay fully local.
       </p>
+
+      <div className="mt-10">
+        <p className="mb-4 text-xs tracking-[0.22em] text-[var(--fog)] uppercase">
+          Choose a track
+        </p>
+        <ul className="space-y-1 border-y border-[var(--cream)]/10 py-2">
+          {tracks.map((track) => {
+            const selected = selectedTrack === track.id;
+            return (
+              <li key={track.id}>
+                <button
+                  type="button"
+                  onClick={() => onSelectTrack(track.id)}
+                  className={`flex w-full items-baseline justify-between gap-6 px-1 py-3 text-left transition ${
+                    selected
+                      ? "text-[var(--accent)]"
+                      : "text-[var(--cream)] hover:text-[var(--accent)]"
+                  }`}
+                >
+                  <span className="font-display text-2xl md:text-[1.75rem]">{track.label}</span>
+                  <span
+                    className={`max-w-[14rem] text-right text-xs leading-snug md:max-w-xs md:text-sm ${
+                      selected ? "text-[var(--accent)]/80" : "text-[var(--fog)]"
+                    }`}
+                  >
+                    {track.blurb}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+
       <div className="mt-10 flex flex-wrap items-center gap-4">
         <button
           type="button"
-          onClick={onStart}
-          className="rounded-md bg-[var(--accent)] px-7 py-3.5 text-sm font-semibold tracking-wide text-[var(--ink)] transition hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+          disabled={!selectedTrack}
+          onClick={() => selectedTrack && onStart(selectedTrack)}
+          className="rounded-md bg-[var(--accent)] px-7 py-3.5 text-sm font-semibold tracking-wide text-[var(--ink)] transition hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
         >
           Start Interview
         </button>
-        <span className="text-sm text-[var(--fog)]">Whisper · Ollama llama3.1 · Piper</span>
+        <span className="text-sm text-[var(--fog)]">
+          {selectedTrack
+            ? INTERVIEW_TRACKS.find((t) => t.id === selectedTrack)?.label
+            : "Select a track to continue"}
+        </span>
       </div>
       {error && (
         <p className="mt-6 max-w-xl rounded-md border border-[var(--danger)]/40 bg-[var(--danger)]/10 px-4 py-3 text-sm text-[var(--danger)]">
@@ -386,6 +504,7 @@ function ConnectingView() {
 }
 
 function ActiveInterview({
+  trackLabel,
   interruptCount,
   interruptFlash,
   aiTalking,
@@ -394,6 +513,7 @@ function ActiveInterview({
   assist,
   onEnd,
 }: {
+  trackLabel: string | null;
   interruptCount: number;
   interruptFlash: boolean;
   aiTalking: boolean;
@@ -411,7 +531,10 @@ function ActiveInterview({
           <p className="font-display text-3xl text-[var(--cream)] md:text-4xl">
             Moss Interview Coach
           </p>
-          <p className="mt-1 text-sm text-[var(--fog)]">SmallWebRTC · local voice stack</p>
+          <p className="mt-1 text-sm text-[var(--fog)]">
+            {trackLabel ? `${trackLabel} · ` : ""}
+            SmallWebRTC · local voice stack
+          </p>
         </div>
         <button
           type="button"

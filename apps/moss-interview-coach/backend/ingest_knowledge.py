@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Ingest system design rubrics into a local Moss index.
+"""Ingest interview rubrics into per-track Moss indexes.
 
-Supports a JSON file of documents or a directory of markdown files.
-Creates/loads the ``system-design-rubric`` index and runs a sample query
-to verify sub-10ms retrieval.
+By default ingests all tracks defined in tracks.py. Pass --track or --source
+to ingest a single index. Creates/loads each index and runs a sample query.
 """
 
 from __future__ import annotations
@@ -19,8 +18,8 @@ from typing import Any
 from dotenv import load_dotenv
 from moss import DocumentInfo, MossClient, QueryOptions
 
-INDEX_NAME = "system-design-rubric"
-DEFAULT_SOURCE = Path(__file__).resolve().parent / "knowledge" / "system_design_rubrics.json"
+from tracks import DEFAULT_TRACK_ID, INTERVIEW_TRACKS, normalize_track_id
+
 DEFAULT_MODEL = "moss-minilm"
 
 
@@ -101,24 +100,29 @@ async def _delete_index_if_exists(client: MossClient, index_name: str) -> None:
             print(f"Note: could not delete existing index ({exc}); create may fail if it exists.")
 
 
-async def ingest(source: Path, *, recreate: bool) -> None:
-    project_id, project_key = _require_credentials()
+async def ingest_index(
+    client: MossClient,
+    *,
+    index_name: str,
+    source: Path,
+    sample_query: str,
+    recreate: bool,
+) -> None:
     documents = load_documents(source)
+    print(f"\n=== {index_name} ===")
     print(f"Loaded {len(documents)} document(s) from {source}")
 
-    client = MossClient(project_id, project_key)
-
     if recreate:
-        await _delete_index_if_exists(client, INDEX_NAME)
+        await _delete_index_if_exists(client, index_name)
 
     try:
-        await client.create_index(INDEX_NAME, documents, DEFAULT_MODEL)
-        print(f"Created index '{INDEX_NAME}' with model '{DEFAULT_MODEL}'.")
+        await client.create_index(index_name, documents, DEFAULT_MODEL)
+        print(f"Created index '{index_name}' with model '{DEFAULT_MODEL}'.")
     except Exception as exc:  # noqa: BLE001
         msg = str(exc).lower()
         if "exist" in msg or "already" in msg:
             print(
-                f"Index '{INDEX_NAME}' already exists. "
+                f"Index '{index_name}' already exists. "
                 "Re-run with --recreate to delete and rebuild, or load as-is.",
                 file=sys.stderr,
             )
@@ -127,18 +131,17 @@ async def ingest(source: Path, *, recreate: bool) -> None:
         else:
             raise
 
-    await client.load_index(INDEX_NAME)
-    print(f"Loaded index '{INDEX_NAME}' into the local Moss runtime.")
+    await client.load_index(index_name)
+    print(f"Loaded index '{index_name}' into the local Moss runtime.")
 
-    sample_query = "How would you design rate limiting for a public API?"
     results = await client.query(
-        INDEX_NAME,
+        index_name,
         sample_query,
         QueryOptions(top_k=1, alpha=0.6),
     )
     elapsed = getattr(results, "time_taken_ms", None)
     elapsed_str = f"{elapsed:.2f} ms" if isinstance(elapsed, (int, float)) else "n/a"
-    print(f"\nSample query: {sample_query}")
+    print(f"Sample query: {sample_query}")
     print(f"Retrieval latency: {elapsed_str}")
     if results.docs:
         top = results.docs[0]
@@ -148,15 +151,54 @@ async def ingest(source: Path, *, recreate: bool) -> None:
         print("No documents returned.")
 
 
+async def ingest_tracks(track_ids: list[str], *, recreate: bool) -> None:
+    project_id, project_key = _require_credentials()
+    client = MossClient(project_id, project_key)
+
+    for track_id in track_ids:
+        meta = INTERVIEW_TRACKS[track_id]
+        await ingest_index(
+            client,
+            index_name=meta["index_name"],
+            source=Path(meta["knowledge_file"]),
+            sample_query=meta["sample_query"],
+            recreate=recreate,
+        )
+
+
+async def ingest_source(source: Path, *, index_name: str, sample_query: str, recreate: bool) -> None:
+    project_id, project_key = _require_credentials()
+    client = MossClient(project_id, project_key)
+    await ingest_index(
+        client,
+        index_name=index_name,
+        source=source,
+        sample_query=sample_query,
+        recreate=recreate,
+    )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Ingest system design guidelines into the Moss system-design-rubric index.",
+        description="Ingest interview rubrics into per-track Moss indexes.",
+    )
+    parser.add_argument(
+        "--track",
+        action="append",
+        dest="tracks",
+        choices=sorted(INTERVIEW_TRACKS.keys()),
+        help="Ingest only this track (repeatable). Default: all tracks.",
     )
     parser.add_argument(
         "--source",
         type=Path,
-        default=DEFAULT_SOURCE,
-        help=f"JSON file or markdown directory (default: {DEFAULT_SOURCE})",
+        default=None,
+        help="JSON file or markdown directory (overrides --track; uses --index-name).",
+    )
+    parser.add_argument(
+        "--index-name",
+        default=None,
+        help="Index name when using --source (default: track index or system-design-rubric).",
     )
     parser.add_argument(
         "--recreate",
@@ -170,7 +212,27 @@ def main() -> None:
     load_dotenv()
     args = parse_args()
     try:
-        asyncio.run(ingest(args.source.resolve(), recreate=args.recreate))
+        if args.source is not None:
+            track = INTERVIEW_TRACKS[DEFAULT_TRACK_ID]
+            index_name = args.index_name or track["index_name"]
+            sample_query = track["sample_query"]
+            asyncio.run(
+                ingest_source(
+                    args.source.resolve(),
+                    index_name=index_name,
+                    sample_query=sample_query,
+                    recreate=args.recreate,
+                )
+            )
+        else:
+            track_ids = (
+                [normalize_track_id(t) for t in args.tracks]
+                if args.tracks
+                else list(INTERVIEW_TRACKS.keys())
+            )
+            # Preserve declaration order from INTERVIEW_TRACKS.
+            ordered = [tid for tid in INTERVIEW_TRACKS if tid in set(track_ids)]
+            asyncio.run(ingest_tracks(ordered, recreate=args.recreate))
     except Exception as exc:  # noqa: BLE001
         print(f"Ingest failed: {exc}", file=sys.stderr)
         sys.exit(1)

@@ -4,7 +4,7 @@ Real-time voice interview coach grounded by **Moss** sub-10ms hybrid retrieval. 
 
 | Layer | Service | Cloud key? |
 |-------|---------|------------|
-| Retrieval | Moss (`system-design-rubric`) | Yes — only required cloud creds |
+| Retrieval | Moss (per-track rubric indexes) | Yes — only required cloud creds |
 | LLM | Ollama `llama3.1` (tool calling) | No |
 | STT | Whisper (faster-whisper) | No |
 | TTS | Piper | No |
@@ -43,11 +43,12 @@ uvicorn server:app --reload --port 8000
 
 First conversation may download Whisper / Piper models. Health: `GET http://localhost:8000/health`
 
-Re-ingest rubrics:
+Re-ingest rubrics (all tracks by default):
 
 ```bash
 python ingest_knowledge.py --recreate
-# or markdown: python ingest_knowledge.py --source ./knowledge/md --recreate
+# single track: python ingest_knowledge.py --track machine-learning-concepts --recreate
+# custom source: python ingest_knowledge.py --source ./knowledge/system_design_rubrics.json --index-name system-design-rubric --recreate
 ```
 
 ### 3. Frontend
@@ -59,7 +60,7 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) → **Start Interview**.
+Open [http://localhost:3000](http://localhost:3000) → pick a track (**System Design**, **Agent-Native Infrastructure**, or **Machine Learning Concepts**) → **Start Interview**.
 
 ## Environment
 
@@ -67,16 +68,25 @@ Open [http://localhost:3000](http://localhost:3000) → **Start Interview**.
 |----------|----------|---------|
 | `MOSS_PROJECT_ID` | yes | — |
 | `MOSS_PROJECT_KEY` | yes | — |
-| `MOSS_INDEX_NAME` | no | `system-design-rubric` |
 | `OLLAMA_BASE_URL` | no | `http://localhost:11434/v1` |
 | `OLLAMA_MODEL` | no | `llama3.1` |
+| `OLLAMA_GRADE_MODEL` | no | same as `OLLAMA_MODEL` |
 | `WHISPER_MODEL` | no | `base` |
 | `WHISPER_DEVICE` | no | `auto` |
 | `PIPER_VOICE` | no | `en_US-lessac-medium` |
+| `GRADE_SUBPROCESS_TIMEOUT_SECS` | no | `60` |
 | `BACKEND_HOST` | no | `0.0.0.0` |
 | `BACKEND_PORT` | no | `8000` |
 | `CORS_ORIGINS` | no | `http://localhost:3000` |
 | `NEXT_PUBLIC_BACKEND_URL` | no | `http://localhost:8000` |
+
+Each track loads its own Moss index:
+
+| Track | Index | Knowledge file |
+|-------|-------|----------------|
+| System Design | `system-design-rubric` | `knowledge/system_design_rubrics.json` |
+| Agent-Native Infrastructure | `agent-native-infrastructure-rubric` | `knowledge/agent_native_rubrics.json` |
+| Machine Learning Concepts | `machine-learning-concepts-rubric` | `knowledge/ml_concepts_rubrics.json` |
 
 ## Architecture
 
@@ -87,19 +97,21 @@ Browser (SmallWebRTC)
   ↔ Assist panel events: current_question / user_answer / grade_result
 ```
 
-Moss loads the index into the local runtime once (`load_index`), then each user turn queries in-process (&lt;10 ms) and appends **Context/Rubric Guidelines** to the LLM system prompt — the same ambient-retrieval pattern described in the [Moss Pipecat integration](https://docs.moss.dev/docs/integrations/pipecat) and [offline-first search](https://docs.moss.dev/docs/build/offline-first-search) docs.
+Moss loads **all track indexes** into the local runtime at startup (`load_index`), then each user turn queries the selected track’s index in-process (&lt;10 ms) and appends **Context/Rubric Guidelines** to the LLM system prompt — the same ambient-retrieval pattern described in the [Moss Pipecat integration](https://docs.moss.dev/docs/integrations/pipecat) and [offline-first search](https://docs.moss.dev/docs/build/offline-first-search) docs.
 
-During an active session, the **Assist** side panel shows the current coach question, your last answer, and real-time grade feedback. When the coach LLM decides a substantive answer was given, it calls the `grade_candidate_answer` tool; that runs a silent Ollama grade against the Moss rubric (score + tips) without speaking through TTS.
+During an active session, the **Assist** side panel shows the current coach question, your last answer, and real-time grade feedback. When the coach LLM decides a substantive answer was given, it calls the `grade_candidate_answer` tool; grading then runs in a **separate Python subprocess** ([`grader_worker.py`](backend/grader_worker.py)) against the Moss rubric (score + tips) so Ollama grading work never shares the spoken coach process. Results return only via RTVI to the Assist panel — never through TTS.
 
 ## Key files
 
-- [`backend/ingest_knowledge.py`](backend/ingest_knowledge.py) — create/load Moss index from JSON or markdown
+- [`backend/tracks.py`](backend/tracks.py) — track prompts, index names, grader personas
+- [`backend/ingest_knowledge.py`](backend/ingest_knowledge.py) — create/load per-track Moss indexes
+- [`backend/grader_worker.py`](backend/grader_worker.py) — subprocess grader (must ship with the app)
 - [`backend/server.py`](backend/server.py) — FastAPI + SmallWebRTC + Moss injector
 - [`frontend/app/page.tsx`](frontend/app/page.tsx) — Idle / Connecting / Active HUD
 
 ## Notes
 
-- Assist panel reads WebRTC data-channel JSON (`type: "interruption"` / `"current_question"` / `"user_answer"` / `"grade_result"` / `"grading_started"`). Grading is LLM tool-triggered via `grade_candidate_answer`.
+- Assist panel reads WebRTC data-channel JSON (`type: "interruption"` / `"current_question"` / `"user_answer"` / `"grade_result"` / `"grading_started"`). Grading is LLM tool-triggered via `grade_candidate_answer`, then executed in the `grader_worker` subprocess.
 - Local Whisper + Piper STT/TTS latency will usually exceed cloud Deepgram/Cartesia; Moss remains the sub-10ms retrieval hop.
 - Interruption / barge-in uses Pipecat VAD turn strategies. Active session footer: **Powered by Moss**.
-- Grading uses Ollama tool calling; `llama3` (no tools) will 400 — use `llama3.1` or another tool-capable model.
+- Coach conversation uses Ollama tool calling; `llama3` (no tools) will 400 — use `llama3.1` or another tool-capable model.
