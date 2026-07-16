@@ -1,0 +1,23 @@
+[project]
+name = "moss-discord-bot"
+version = "0.1.0"
+description = "Discord bot with Moss semantic indexing and search"
+requires-python = ">=3.10,<3.15"
+dependencies = [
+    "discord.py>=2.4.0,<3.0.0",
+    "moss",
+    "python-dotenv>=1.0.0,<2.0.0",
+]
+
+[tool.uv.sources]
+moss = { path = "../../sdks/python/sdk" }
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff>=0.8.0"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
