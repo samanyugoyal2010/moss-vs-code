@@ -244,6 +244,7 @@ Full API reference: [docs.moss.dev](https://docs.moss.dev).
 | [Next.js](https://nextjs.org) | Available | [`apps/next-js/`](apps/next-js/) |
 | [VitePress](https://vitepress.dev) | Available | [`packages/vitepress-plugin-moss/`](packages/vitepress-plugin-moss/) |
 | [Vercel AI SDK](https://sdk.vercel.ai) | Available | [`examples/cookbook/vercel-ai-sdk/`](examples/cookbook/vercel-ai-sdk/) |
+| [n8n](https://n8n.io) | Available | [`packages/n8n-nodes-moss/`](packages/n8n-nodes-moss/) |
 
 ## Architecture
 
