@@ -71,6 +71,31 @@ jobs:
         working-directory: ${{ env.PKG_DIR }}
         run: npm test
 
+      - name: Validate release tag before publish
+        id: tagcheck
+        env:
+          VERSION: ${{ env.VERSION }}
+        run: |
+          git fetch --tags --force
+          TAG="n8n-nodes-moss-v${VERSION}"
+          HEAD_SHA="$(git rev-parse HEAD)"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "head=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            TAG_SHA="$(git rev-list -n 1 "$TAG")"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "sha=${TAG_SHA}" >> "$GITHUB_OUTPUT"
+            if [[ "$TAG_SHA" != "$HEAD_SHA" ]]; then
+              echo "ERROR: $TAG points at ${TAG_SHA}, but this checkout is ${HEAD_SHA}."
+              echo "Refusing to publish HEAD because an existing tag already claims this version."
+              exit 1
+            fi
+            echo "Tag $TAG already points at HEAD"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check whether version is already published
         id: published
         working-directory: ${{ env.PKG_DIR }}
@@ -94,12 +119,11 @@ jobs:
         env:
           VERSION: ${{ env.VERSION }}
           ALREADY_PUBLISHED: ${{ steps.published.outputs.exists }}
+          TAG_EXISTS: ${{ steps.tagcheck.outputs.exists }}
+          TAG: ${{ steps.tagcheck.outputs.tag }}
         run: |
-          git fetch --tags --force
-          TAG="n8n-nodes-moss-v${VERSION}"
-
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists"
+          if [[ "$TAG_EXISTS" == "true" ]]; then
+            echo "Tag $TAG already points at HEAD; nothing to do"
             exit 0
           fi
 

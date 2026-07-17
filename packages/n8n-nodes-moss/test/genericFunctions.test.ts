@@ -9,6 +9,7 @@ import {
 	listIndexes,
 	normalizeExecutionData,
 	parseDocuments,
+	parseRetryAfterMs,
 	parseStringList,
 	queryIndex,
 	serializeBulkPayload,
@@ -88,6 +89,19 @@ describe('parseStringList', () => {
 		expect(() => parseStringList([true])).toThrow(/must be a string or number/);
 		expect(() => parseStringList([{}])).toThrow(/must be a string or number/);
 		expect(() => parseStringList(['  '])).toThrow(/empty/);
+	});
+});
+
+describe('parseRetryAfterMs', () => {
+	it('parses delay-seconds and HTTP-date forms with a 60s cap', () => {
+		expect(parseRetryAfterMs('3')).toBe(3000);
+		expect(parseRetryAfterMs('120')).toBe(60_000);
+
+		const now = Date.parse('Wed, 21 Oct 2015 07:28:00 GMT');
+		expect(parseRetryAfterMs('Wed, 21 Oct 2015 07:28:05 GMT', now)).toBe(5000);
+		expect(parseRetryAfterMs('Wed, 21 Oct 2015 07:30:00 GMT', now)).toBe(60_000);
+		expect(parseRetryAfterMs('not-a-date')).toBeUndefined();
+		expect(parseRetryAfterMs(null)).toBeUndefined();
 	});
 });
 
@@ -239,7 +253,10 @@ describe('HTTP helpers (mocked)', () => {
 			if (url === 'https://upload.example/put-429') {
 				uploadAttempts += 1;
 				if (uploadAttempts === 1) {
-					return new Response('slow down', { status: 429 });
+					return new Response('slow down', {
+						status: 429,
+						headers: { 'Retry-After': '0' },
+					});
 				}
 				return new Response(null, { status: 200 });
 			}

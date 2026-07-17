@@ -71,6 +71,23 @@ function isRetryableTransportError(error: unknown): boolean {
 	);
 }
 
+const MAX_RETRY_AFTER_MS = 60_000;
+
+/** Parse Retry-After as delay-seconds or HTTP-date; returns wait milliseconds. */
+export function parseRetryAfterMs(header: string | null, nowMs: number = Date.now()): number | undefined {
+	if (!header) return undefined;
+	const trimmed = header.trim();
+	if (!trimmed) return undefined;
+
+	if (/^\d+$/.test(trimmed)) {
+		return Math.min(MAX_RETRY_AFTER_MS, Math.max(0, Number(trimmed) * 1000));
+	}
+
+	const dateMs = Date.parse(trimmed);
+	if (Number.isNaN(dateMs)) return undefined;
+	return Math.min(MAX_RETRY_AFTER_MS, Math.max(0, dateMs - nowMs));
+}
+
 export async function manageRequest(
 	credentials: MossCredentials,
 	body: Record<string, unknown>,
@@ -256,6 +273,8 @@ async function uploadWithRetries(uploadUrl: string, payload: ArrayBuffer): Promi
 	const body = Buffer.from(payload);
 
 	for (let attempt = 0; attempt < MAX_UPLOAD_RETRIES; attempt++) {
+		let retryDelayMs = 1000 * 2 ** attempt;
+
 		try {
 			const response = await fetch(uploadUrl, {
 				method: 'PUT',
@@ -263,6 +282,8 @@ async function uploadWithRetries(uploadUrl: string, payload: ArrayBuffer): Promi
 				headers: { 'Content-Type': 'application/octet-stream' },
 				signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
 			});
+
+			const retryAfterMs = parseRetryAfterMs(response.headers.get('Retry-After'));
 
 			// Drain/cancel the body so keep-alive sockets are released promptly.
 			await response.arrayBuffer().catch(() => undefined);
@@ -273,6 +294,9 @@ async function uploadWithRetries(uploadUrl: string, payload: ArrayBuffer): Promi
 			const retryableStatus = response.status === 429 || response.status >= 500;
 			if (!retryableStatus) {
 				throw lastError;
+			}
+			if (retryAfterMs !== undefined) {
+				retryDelayMs = retryAfterMs;
 			}
 		} catch (error) {
 			if (
@@ -296,7 +320,7 @@ async function uploadWithRetries(uploadUrl: string, payload: ArrayBuffer): Promi
 		}
 
 		if (attempt < MAX_UPLOAD_RETRIES - 1) {
-			await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
+			await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
 		}
 	}
 
