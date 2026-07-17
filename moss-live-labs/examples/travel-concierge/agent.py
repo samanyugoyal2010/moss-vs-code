@@ -123,9 +123,12 @@ class TravelConciergeAgent(Agent):
         self.turn = 0
         # Monotonic schedule order so a slow older extract cannot overwrite a newer correction.
         self._remember_seq = 0
+        # Highest seq observed per canonical category (advanced before write attempts).
         self._category_seq: dict[str, int] = {}
-        self._latest_refresh_seq = 0
+        # Increments on each successful store batch; used to order panel refreshes.
+        self._session_write_gen = 0
         self._remember_write_lock = asyncio.Lock()
+        self._refresh_lock = asyncio.Lock()
         # In-flight remember tasks — waited on briefly next turn, never cancelled on timeout.
         self._remember_tasks: set[asyncio.Task] = set()
         # Last catalog snapshot so a post-remember republish can keep catalog hits.
@@ -255,11 +258,31 @@ class TravelConciergeAgent(Agent):
             logger.warning(f"Fact extraction failed: {e}")
             return []
 
+    async def _store_fact(self, doc_id: str, fact_text: str, fact_id: str, seq: int) -> bool:
+        """Write one preference doc; retry once on failure so a claimed seq is not left empty."""
+        doc = DocumentInfo(
+            id=doc_id,
+            text=fact_text,
+            metadata={"role": "traveler", "category": fact_id, "seq": str(seq)},
+        )
+        try:
+            await self.session_index.add_docs([doc])
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to store fact {doc_id}: {e}; retrying once")
+            try:
+                await self.session_index.add_docs([doc])
+                return True
+            except Exception as e2:
+                logger.warning(f"Retry store failed for {doc_id}: {e2}")
+                return False
+
     async def _remember_facts(self, text: str, seq: int) -> None:
         facts = await self._extract_facts(text)
         stored = 0
-        # Serialize writes + panel refresh so a slow older extract cannot overwrite a
-        # newer correction in storage or in the UI.
+        my_gen: int | None = None
+
+        # Hold the write lock only for session mutations — never for panel query/publish.
         async with self._remember_write_lock:
             for fact_id, fact_text in facts:
                 self.turn += 1
@@ -273,42 +296,39 @@ class TravelConciergeAgent(Agent):
                             last,
                         )
                         continue
+                    # Claim newest observed seq before writing so a failed newer correction
+                    # cannot be overwritten by an older extract that finishes later.
+                    self._category_seq[fact_id] = seq
                     doc_id = f"pref-{fact_id}"
                 else:
                     doc_id = f"pref-other-{self.turn}"
-                try:
-                    await self.session_index.add_docs(
-                        [
-                            DocumentInfo(
-                                id=doc_id,
-                                text=fact_text,
-                                metadata={
-                                    "role": "traveler",
-                                    "category": fact_id,
-                                    "seq": str(seq),
-                                },
-                            )
-                        ]
-                    )
-                    # Advance the category gate only after a successful write.
-                    if fact_id in FACT_IDS:
-                        self._category_seq[fact_id] = seq
+
+                if await self._store_fact(doc_id, fact_text, fact_id, seq):
                     stored += 1
                     logger.debug("Remembered [%s]: %s", doc_id, fact_text)
-                except Exception as e:
-                    logger.warning(f"Failed to store fact: {e}")
 
-            logger.info("Stored %d preference(s) from turn", stored)
+            if stored:
+                self._session_write_gen += 1
+                my_gen = self._session_write_gen
 
-            if not stored or seq < self._latest_refresh_seq:
+        logger.info("Stored %d preference(s) from turn", stored)
+        if my_gen is None:
+            return
+
+        # Refresh outside the write lock. Only the latest write-gen publishes, and it
+        # re-queries under the refresh lock so earlier facts written by other tasks appear.
+        async with self._refresh_lock:
+            if my_gen != self._session_write_gen:
                 return
-
             try:
                 t = time.perf_counter()
                 session_results = await self.session_index.query(
                     self._last_query or text, QueryOptions(top_k=SESSION_TOP_K)
                 )
                 session_ms = (time.perf_counter() - t) * 1000.0
+                # Re-check after the query: a newer store may have landed while we waited.
+                if my_gen != self._session_write_gen:
+                    return
                 await self._publish(
                     self._last_query or text,
                     self._last_catalog,
@@ -316,7 +336,6 @@ class TravelConciergeAgent(Agent):
                     self._last_catalog_ms,
                     session_ms,
                 )
-                self._latest_refresh_seq = seq
             except Exception as e:
                 logger.warning(f"Failed to republish session after remember: {e}")
 
