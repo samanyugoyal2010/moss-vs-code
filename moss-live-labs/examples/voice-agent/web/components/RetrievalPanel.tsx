@@ -1,16 +1,39 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   useDataChannel,
   useRoomContext,
   useConnectionState,
 } from "@livekit/components-react";
-import { ConnectionState } from "livekit-client";
-import type { RetrievalPayload } from "@/lib/types";
+import { ConnectionState, RoomEvent } from "livekit-client";
+import type { RetrievalDoc, RetrievalPayload } from "@/lib/types";
 
 const REGIONS = ["US", "EU"] as const;
 type Region = (typeof REGIONS)[number];
+
+function isRetrievalDoc(value: unknown): value is RetrievalDoc {
+  if (!value || typeof value !== "object") return false;
+  const doc = value as Record<string, unknown>;
+  const idOk =
+    doc.id === undefined || doc.id === null || typeof doc.id === "string";
+  return idOk && typeof doc.text === "string" && typeof doc.score === "number";
+}
+
+function parseRetrievalPayload(value: unknown): RetrievalPayload | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.query !== "string") return null;
+  if (!Array.isArray(raw.docs) || !raw.docs.every(isRetrievalDoc)) return null;
+  if (typeof raw.took_ms !== "number" || Number.isNaN(raw.took_ms)) return null;
+  if (raw.region !== undefined && typeof raw.region !== "string") return null;
+  return {
+    query: raw.query,
+    docs: raw.docs,
+    took_ms: raw.took_ms,
+    region: raw.region,
+  };
+}
 
 // Shows what Moss retrieved for the latest turn, plus a region picker that
 // live-updates the metadata filter the agent applies (no restart needed).
@@ -19,12 +42,23 @@ export function RetrievalPanel() {
   const connState = useConnectionState();
   const [data, setData] = useState<RetrievalPayload | null>(null);
   const [region, setRegion] = useState<Region>("US");
+  const regionRef = useRef<Region>(region);
+  regionRef.current = region;
 
   useDataChannel(
     "moss.retrieval",
     useCallback((msg: { payload: Uint8Array }) => {
       try {
-        setData(JSON.parse(new TextDecoder().decode(msg.payload)) as RetrievalPayload);
+        const parsed = parseRetrievalPayload(
+          JSON.parse(new TextDecoder().decode(msg.payload)),
+        );
+        if (!parsed) {
+          console.error("invalid moss.retrieval payload shape");
+          return;
+        }
+        // Ignore stale results from a previous region after the picker changed.
+        if (parsed.region && parsed.region !== regionRef.current) return;
+        setData(parsed);
       } catch (err) {
         console.error("failed to parse moss.retrieval payload", err);
       }
@@ -33,22 +67,33 @@ export function RetrievalPanel() {
 
   const publishRegion = useCallback(
     (r: Region) => {
-      try {
-        room.localParticipant?.publishData(
-          new TextEncoder().encode(JSON.stringify({ region: r })),
-          { reliable: true, topic: "moss.region" },
-        );
-      } catch (err) {
+      const publish = room.localParticipant?.publishData(
+        new TextEncoder().encode(JSON.stringify({ region: r })),
+        { reliable: true, topic: "moss.region" },
+      );
+      void publish?.catch((err: unknown) => {
         console.error("failed to publish region", err);
-      }
+      });
     },
     [room],
   );
 
-  // Sync the agent to the picker whenever we connect or the region changes.
+  // Sync the agent to the picker whenever we connect, the region changes, or
+  // the agent participant joins (covers packets sent before the agent listened).
   useEffect(() => {
-    if (connState === ConnectionState.Connected) publishRegion(region);
-  }, [connState, region, publishRegion]);
+    if (connState !== ConnectionState.Connected) return;
+    publishRegion(region);
+    const onParticipant = () => publishRegion(regionRef.current);
+    room.on(RoomEvent.ParticipantConnected, onParticipant);
+    return () => {
+      room.off(RoomEvent.ParticipantConnected, onParticipant);
+    };
+  }, [connState, region, publishRegion, room]);
+
+  const selectRegion = (r: Region) => {
+    setRegion(r);
+    setData(null);
+  };
 
   return (
     <div className="card">
@@ -63,7 +108,7 @@ export function RetrievalPanel() {
               key={r}
               type="button"
               aria-pressed={region === r}
-              onClick={() => setRegion(r)}
+              onClick={() => selectRegion(r)}
               style={{
                 padding: "6px 18px",
                 border: "none",

@@ -5,11 +5,12 @@ import { LiveKitRoom, RoomAudioRenderer } from "@livekit/components-react";
 import { AgentSide } from "@/components/AgentSide";
 import { RetrievalPanel } from "@/components/RetrievalPanel";
 
-type Conn = { serverUrl: string; roomName: string; participantToken: string };
+type Conn = { serverUrl: string; participantToken: string };
 
 export default function Page() {
   const [conn, setConn] = useState<Conn | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const [roomLive, setRoomLive] = useState(false);
 
   const connect = useCallback(async () => {
     setConnecting(true);
@@ -17,6 +18,7 @@ export default function Page() {
       const res = await fetch("/api/token");
       if (!res.ok) throw new Error(await res.text());
       const data = (await res.json()) as Conn;
+      setRoomLive(false);
       setConn(data);
     } catch (err) {
       console.error("failed to get token", err);
@@ -25,6 +27,8 @@ export default function Page() {
       setConnecting(false);
     }
   }, []);
+
+  const statusLabel = roomLive ? "live" : conn ? "connecting" : "offline";
 
   return (
     <div className="app">
@@ -35,9 +39,9 @@ export default function Page() {
           <span className="divider" />
           <span className="title">Northwind Support · voice agent</span>
         </div>
-        <div className={`status ${conn ? "live" : ""}`}>
+        <div className={`status ${roomLive ? "live" : ""}`}>
           <span className="dot" />
-          {conn ? "live" : "offline"}
+          {statusLabel}
         </div>
       </header>
 
@@ -49,7 +53,11 @@ export default function Page() {
           connect
           audio
           video={false}
-          onDisconnected={() => setConn(null)}
+          onConnected={() => setRoomLive(true)}
+          onDisconnected={() => {
+            setRoomLive(false);
+            setConn(null);
+          }}
         >
           <AgentSide />
           <RetrievalPanel />

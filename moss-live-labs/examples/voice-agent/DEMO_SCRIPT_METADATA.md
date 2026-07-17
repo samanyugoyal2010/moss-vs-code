@@ -1,7 +1,7 @@
 # Demo Script — Metadata Filtering (region-scoped answers)
 
 ~90s. Shows the **same question** returning **different, correct answers** by region,
-because Moss filters retrieval on `metadata.region` — one shared index, scoped per line.
+because Moss filters retrieval on `metadata.region` — one shared index, scoped per query.
 
 ## Before you record
 - [ ] **Re-seed** (metadata changed): delete the old `demo-customer_faqs` index in the Moss
@@ -13,7 +13,7 @@ because Moss filters retrieval on `metadata.region` — one shared index, scoped
 > "Same knowledge base, one index. This support panel has a region picker — right now it's
 > set to the US, and Moss only retrieves policies that apply to that region. Watch."
 
-**[Connect. Panel shows the picker on US and `filter · region ∈ [US, all]`.]**
+**[Connect. Panel shows the picker on US and `region: US + global`.]**
 
 ## 2 · US answer (0:12–0:35)
 > "What's your return window?"
@@ -23,7 +23,7 @@ because Moss filters retrieval on `metadata.region` — one shared index, scoped
 > US returns policy. The EU policy is in the same index, but it was filtered out."
 
 ## 3 · Switch region (0:35–1:05)
-**[Click EU in the picker — the filter line flips to `region ∈ [EU, all]` instantly.]**
+**[Click EU in the picker — the filter line flips to `region: EU + global` instantly.]**
 > "Now I switch the same agent to the EU — no restart, just the filter. Same question."
 
 > "What's your return window?"

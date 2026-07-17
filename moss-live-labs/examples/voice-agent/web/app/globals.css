@@ -4,7 +4,8 @@
   --panel-soft: #0c110d;
   --text: #f1f1f1;
   --muted: #8b978c;
-  --faint: #5a6459;
+  /* ~4.5:1+ against --panel so idle/labels/empty states stay readable */
+  --faint: #7d887c;
   --sage: #7ea97e;
   --mint: #abe6c7;
   --lime: #e6f1a8;
@@ -337,7 +338,7 @@ body {
   cursor: pointer;
   transition: transform 0.12s ease, opacity 0.12s ease;
 }
-.btn:hover {
+.btn:hover:not(:disabled) {
   transform: translateY(-1px);
 }
 .btn:disabled {

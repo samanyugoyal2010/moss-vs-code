@@ -14,6 +14,7 @@ from livekit.agents import (
     ChatMessage,
     Agent,
     AgentSession,
+    StopResponse,
 )
 
 
@@ -33,12 +34,17 @@ REGION = os.getenv("MOSS_REGION", "US")
 if REGION not in ALLOWED_REGIONS:
     REGION = "US"
 
+NO_MATCH_CONTEXT = (
+    "No relevant information was found. Say you don't have that detail "
+    "and offer to connect them with a person. Do not make up specifics."
+)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("moss-agent")
 
 class MossSemanticRetrievalAgent(Agent):
 
-    def __init__(self, moss_client: MossClient, room: rtc.Room):
+    def __init__(self, moss_client: MossClient, room: rtc.Room, region: str = REGION):
         super().__init__(
             instructions="""
                 You are Northwind's customer support voice assistant, speaking directly to
@@ -58,13 +64,20 @@ class MossSemanticRetrievalAgent(Agent):
         )
         self.moss = moss_client
         self.room = room
-        self.region = REGION  # live-updated from the UI region picker
+        self.region = region  # live-updated from the UI region picker
 
-    async def _publish_retrieval(self, query: str, results, fallback_ms: float) -> None:
+    async def _publish_retrieval(
+        self,
+        query: str,
+        results,
+        fallback_ms: float,
+        region: str,
+    ) -> None:
         """Send the retrieved chunks to the web UI over a LiveKit data channel."""
         # Use Moss's own server-reported search time; fall back to wall-clock.
-        server_ms = getattr(results, "time_taken_ms", None)
+        server_ms = getattr(results, "time_taken_ms", None) if results is not None else None
         took_ms = float(server_ms) if server_ms is not None else fallback_ms
+        docs = results.docs if results and getattr(results, "docs", None) else []
         payload = {
             "query": query,
             "docs": [
@@ -73,10 +86,10 @@ class MossSemanticRetrievalAgent(Agent):
                     "text": d.text,
                     "score": float(getattr(d, "score", 0.0)),
                 }
-                for d in (results.docs if results and results.docs else [])
+                for d in docs
             ],
             "took_ms": round(took_ms, 2),
-            "region": self.region,
+            "region": region,
         }
         try:
             await self.room.local_participant.publish_data(
@@ -94,13 +107,15 @@ class MossSemanticRetrievalAgent(Agent):
         user_query = new_message.text_content
         if not user_query or not user_query.strip():
             # ignore empty/interim transcription artifacts
-            await super().on_user_turn_completed(turn_ctx, new_message)
-            return
+            raise StopResponse()
+
         logger.info(f"User asked: {user_query}")
+        # Snapshot once per turn so filter + panel stay aligned if the picker changes mid-query.
+        region = self.region
 
         try:
             # 1. Automatic Search — metadata-filtered to this region + global docs
-            region_filter = {"field": "region", "condition": {"$in": [self.region, "all"]}}
+            region_filter = {"field": "region", "condition": {"$in": [region, "all"]}}
             t0 = time.perf_counter()
             results = await self.moss.query(
                 INDEX_NAME,
@@ -110,7 +125,7 @@ class MossSemanticRetrievalAgent(Agent):
             took_ms = (time.perf_counter() - t0) * 1000.0
 
             # 2. Stream the retrieval to the web UI (the Moss knowledge-base panel)
-            await self._publish_retrieval(user_query, results, took_ms)
+            await self._publish_retrieval(user_query, results, took_ms, region)
 
             # 3. Context Injection
             if results.docs:
@@ -123,15 +138,14 @@ class MossSemanticRetrievalAgent(Agent):
                 logger.info(f"Injected context ({took_ms:.1f}ms): {context_str[:100]}...")
             else:
                 # No match: keep the agent from inventing an answer.
-                turn_ctx.add_message(
-                    role="system",
-                    content="No relevant information was found. Say you don't have that detail "
-                    "and offer to connect them with a person. Do not make up specifics.",
-                )
+                turn_ctx.add_message(role="system", content=NO_MATCH_CONTEXT)
                 logger.info("No relevant context found in Moss index")
 
         except Exception as e:
             logger.error(f"Moss search failed: {e}", exc_info=True)
+            # Clear stale panel docs and keep the reply grounded when retrieval fails.
+            await self._publish_retrieval(user_query, None, 0.0, region)
+            turn_ctx.add_message(role="system", content=NO_MATCH_CONTEXT)
 
         # 3. Proceed with standard generation
         await super().on_user_turn_completed(turn_ctx, new_message)
@@ -143,6 +157,27 @@ async def entrypoint(ctx: JobContext):
             "Missing MOSS_PROJECT_ID / MOSS_PROJECT_KEY. Copy .env.example to .env and fill them in."
         )
     await ctx.connect()
+
+    # Apply region packets as soon as the room is up — before the agent exists —
+    # so a UI picker change that arrives during startup is not dropped.
+    pending_region = {"value": REGION}
+    agent_holder: dict[str, MossSemanticRetrievalAgent | None] = {"agent": None}
+
+    @ctx.room.on("data_received")
+    def _on_data(pkt: rtc.DataPacket):
+        if pkt.topic == "moss.region":
+            try:
+                r = json.loads(bytes(pkt.data).decode("utf-8")).get("region")
+                if r in ALLOWED_REGIONS:
+                    pending_region["value"] = r
+                    agent = agent_holder["agent"]
+                    if agent is not None:
+                        agent.region = r
+                    logger.info(f"Region filter set to {r}")
+                else:
+                    logger.warning(f"Ignoring unknown region {r!r} (allowed: {sorted(ALLOWED_REGIONS)})")
+            except Exception as e:
+                logger.warning(f"Bad region packet: {e}")
 
     # Initialize Moss
     moss_client = MossClient(project_id=MOSS_PROJECT_ID, project_key=MOSS_PROJECT_KEY)
@@ -177,21 +212,8 @@ async def entrypoint(ctx: JobContext):
         },
     )
 
-    agent = MossSemanticRetrievalAgent(moss_client, ctx.room)
-
-    # The UI region picker publishes { "region": "US" | "EU" } on this topic.
-    @ctx.room.on("data_received")
-    def _on_data(pkt: rtc.DataPacket):
-        if pkt.topic == "moss.region":
-            try:
-                r = json.loads(bytes(pkt.data).decode("utf-8")).get("region")
-                if r in ALLOWED_REGIONS:
-                    agent.region = r
-                    logger.info(f"Region filter set to {r}")
-                else:
-                    logger.warning(f"Ignoring unknown region {r!r} (allowed: {sorted(ALLOWED_REGIONS)})")
-            except Exception as e:
-                logger.warning(f"Bad region packet: {e}")
+    agent = MossSemanticRetrievalAgent(moss_client, ctx.room, region=pending_region["value"])
+    agent_holder["agent"] = agent
 
     # Start the session with our custom MossSemanticRetrievalAgent
     await session.start(agent=agent, room=ctx.room)

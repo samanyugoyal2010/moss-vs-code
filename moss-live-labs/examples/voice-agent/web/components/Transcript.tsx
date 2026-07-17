@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRoomContext } from "@livekit/components-react";
 import { RoomEvent, type TranscriptionSegment, type Participant } from "livekit-client";
 
@@ -11,6 +11,8 @@ type Turn = { id: string; text: string; isUser: boolean };
 export function Transcript() {
   const room = useRoomContext();
   const [turns, setTurns] = useState<Record<string, Turn>>({});
+  const containerRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
 
   useEffect(() => {
     const onTranscription = (segments: TranscriptionSegment[], participant?: Participant) => {
@@ -36,18 +38,41 @@ export function Transcript() {
 
   const ordered = Object.values(turns).filter((t) => t.text.trim().length > 0);
 
-  if (ordered.length === 0) {
-    return <div className="transcript transcript-empty">Say hello to start the conversation.</div>;
-  }
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      stickToBottomRef.current = distanceFromBottom < 80;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !stickToBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [ordered]);
 
   return (
-    <div className="transcript">
-      {ordered.map((turn) => (
-        <div className={`turn ${turn.isUser ? "user" : "agent"}`} key={turn.id}>
-          <span className="who">{turn.isUser ? "You" : "Agent"}</span>
-          <span className="text">{turn.text}</span>
-        </div>
-      ))}
+    <div
+      className={`transcript${ordered.length === 0 ? " transcript-empty" : ""}`}
+      ref={containerRef}
+      role="log"
+      aria-live="polite"
+      aria-relevant="additions"
+    >
+      {ordered.length === 0 ? (
+        "Say hello to start the conversation."
+      ) : (
+        ordered.map((turn) => (
+          <div className={`turn ${turn.isUser ? "user" : "agent"}`} key={turn.id}>
+            <span className="who">{turn.isUser ? "You" : "Agent"}</span>
+            <span className="text">{turn.text}</span>
+          </div>
+        ))
+      )}
     </div>
   );
 }

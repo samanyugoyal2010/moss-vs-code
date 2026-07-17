@@ -1,5 +1,6 @@
 export type RetrievalDoc = {
-  id?: string;
+  /** Moss may omit an id or emit JSON null for documents without one. */
+  id?: string | null;
   text: string;
   score: number;
 };

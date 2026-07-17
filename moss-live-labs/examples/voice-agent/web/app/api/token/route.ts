@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { AccessToken, type VideoGrant } from "livekit-server-sdk";
+import { AccessToken, TrackSource, type VideoGrant } from "livekit-server-sdk";
 
 // Copy web/.env.local.example to web/.env.local to get the `livekit-server --dev` defaults.
 const LIVEKIT_URL = process.env.LIVEKIT_URL;
@@ -26,17 +26,18 @@ export async function GET() {
       room: roomName,
       roomJoin: true,
       canPublish: true, // publish mic
+      canPublishSources: [TrackSource.MICROPHONE],
       canPublishData: true,
       canSubscribe: true,
     };
     at.addGrant(grant);
 
     return NextResponse.json(
-      { serverUrl: LIVEKIT_URL, roomName, participantToken: await at.toJwt() },
+      { serverUrl: LIVEKIT_URL, participantToken: await at.toJwt() },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
-    const msg = error instanceof Error ? error.message : "Unknown error";
-    return new NextResponse(msg, { status: 500 });
+    console.error("token generation failed", error);
+    return new NextResponse("Failed to generate token", { status: 500 });
   }
 }

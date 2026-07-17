@@ -15,7 +15,7 @@
     "id": "return-window-eu",
     "category": "returns",
     "region": "EU",
-    "text": "In the EU, you have a 14-day right of withdrawal starting the day you receive the item, in line with EU consumer law. Return shipping on withdrawals is free, and final-sale items are excluded."
+    "text": "In the EU, you have a 14-day right of withdrawal starting the day you receive the item, in line with EU consumer law. Return shipping on withdrawals is free. Statutory exceptions (for example sealed goods unsealed after delivery that are not suitable for return for health or hygiene reasons, or clearly personalized items) may apply; 'final sale' labeling alone does not remove the withdrawal right."
   },
   {
     "id": "exchange-size",
@@ -96,10 +96,16 @@
     "text": "To reset your password, click 'Forgot password' on the sign-in page and we'll email you a reset link that's valid for one hour. If the email doesn't arrive, check spam or make sure you're using the address on file."
   },
   {
-    "id": "warranty",
+    "id": "warranty-us",
     "category": "product",
-    "region": "all",
-    "text": "Northwind products carry a one-year limited warranty against manufacturing defects. If something fails under normal use within a year, we'll repair or replace it for free. Wear and tear and accidental damage aren't covered."
+    "region": "US",
+    "text": "In the United States, Northwind products carry a one-year limited warranty against manufacturing defects. If something fails under normal use within a year, we'll repair or replace it for free. Wear and tear and accidental damage aren't covered."
+  },
+  {
+    "id": "warranty-eu",
+    "category": "product",
+    "region": "EU",
+    "text": "In the EU, you have a minimum two-year legal guarantee against goods that are not in conformity at delivery. If a manufacturing defect appears within that period, we'll repair or replace the item at no cost. Wear and tear and accidental damage aren't covered by this guarantee."
   },
   {
     "id": "damaged-item",
