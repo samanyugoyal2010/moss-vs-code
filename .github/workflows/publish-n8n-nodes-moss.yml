@@ -82,8 +82,8 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "head=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
 
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            TAG_SHA="$(git rev-list -n 1 "$TAG")"
+          if git rev-parse --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            TAG_SHA="$(git rev-list -n 1 "refs/tags/$TAG")"
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "sha=${TAG_SHA}" >> "$GITHUB_OUTPUT"
             if [[ "$TAG_SHA" != "$HEAD_SHA" ]]; then
