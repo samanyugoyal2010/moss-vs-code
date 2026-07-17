@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   assertLocalDevOnly,
+  configFromEnv,
   isLoopbackIp,
   isLoopbackListenHost,
   isTrustedProxyPeer,
   isValidIpv4,
   peerIp,
+  warnTokenGuardMisconfig,
   type TokenGuardConfig,
 } from "./tokenGuard";
 
@@ -131,7 +133,7 @@ describe("peerIp strategies", () => {
     assert.equal(peerIp(req({ "x-forwarded-for": "127.0.0.1" }), config, "127.0.0.1"), null);
   });
 
-  it("returns null and warns for missing headers or invalid strategy", () => {
+  it("returns null for missing headers or invalid strategy without per-request warnings", () => {
     const warnings: string[] = [];
     const original = console.warn;
     console.warn = (...args: unknown[]) => {
@@ -151,6 +153,38 @@ describe("peerIp strategies", () => {
         ),
         null,
       );
+      assert.equal(warnings.length, 0);
+    } finally {
+      console.warn = original;
+    }
+  });
+});
+
+describe("warnTokenGuardMisconfig", () => {
+  it("logs empty TRUSTED_PROXIES and invalid TRUST_PROXY_HEADER once at config time", () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(String(args[0]));
+    };
+    try {
+      warnTokenGuardMisconfig(
+        baseConfig({
+          trustProxy: true,
+          trustedProxies: [],
+          trustProxyHeader: "x-forwardedfor",
+        }),
+      );
+      assert.ok(warnings.some((w) => w.includes("TRUSTED_PROXIES")));
+      assert.ok(warnings.some((w) => w.includes("TRUST_PROXY_HEADER")));
+
+      warnings.length = 0;
+      configFromEnv({
+        TRUST_PROXY: "1",
+        TRUST_PROXY_HEADER: "x-forwardedfor",
+        TRUSTED_PROXIES: "",
+      });
+      assert.ok(warnings.some((w) => w.includes("TRUSTED_PROXIES")));
       assert.ok(warnings.some((w) => w.includes("TRUST_PROXY_HEADER")));
     } finally {
       console.warn = original;

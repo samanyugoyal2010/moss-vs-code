@@ -14,8 +14,8 @@ export type TokenGuardConfig = {
   trustedProxies: string[];
 };
 
-export function configFromEnv(env: NodeJS.ProcessEnv = process.env): TokenGuardConfig {
-  return {
+export function configFromEnv(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): TokenGuardConfig {
+  const config: TokenGuardConfig = {
     allowRemoteToken: env.ALLOW_REMOTE_TOKEN === "1",
     trustProxy: env.TRUST_PROXY === "1",
     trustedProxyHops: Math.max(1, Number(env.TRUSTED_PROXY_HOPS || "1") || 1),
@@ -26,6 +26,29 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): TokenGuardC
       .map((part) => part.trim().toLowerCase())
       .filter(Boolean),
   };
+  // One-time startup diagnostics — never log these invariants on every /api/token hit.
+  warnTokenGuardMisconfig(config);
+  return config;
+}
+
+/** Log TRUST_PROXY misconfiguration once when config is constructed. */
+export function warnTokenGuardMisconfig(config: TokenGuardConfig): void {
+  if (!config.trustProxy) return;
+
+  if (config.trustedProxies.length === 0) {
+    console.warn(
+      "TRUST_PROXY=1 but TRUSTED_PROXIES is empty; ignoring forwarded client IP headers",
+    );
+  }
+
+  if (
+    config.trustProxyHeader !== "x-forwarded-for" &&
+    config.trustProxyHeader !== "x-real-ip"
+  ) {
+    console.warn(
+      `Invalid TRUST_PROXY_HEADER=${JSON.stringify(config.trustProxyHeader)}; use "x-forwarded-for" or "x-real-ip"`,
+    );
+  }
 }
 
 function normalizeIp(ip: string): string {
@@ -86,10 +109,9 @@ export function peerIp(
 ): string | null {
   if (!config.trustProxy) return null;
 
+  // Misconfig (empty TRUSTED_PROXIES / bad TRUST_PROXY_HEADER) is warned once in
+  // configFromEnv / warnTokenGuardMisconfig — fail closed quietly per request.
   if (config.trustedProxies.length === 0) {
-    console.warn(
-      "TRUST_PROXY=1 but TRUSTED_PROXIES is empty; ignoring forwarded client IP headers",
-    );
     return null;
   }
 
@@ -102,9 +124,6 @@ export function peerIp(
   }
 
   if (config.trustProxyHeader !== "x-forwarded-for") {
-    console.warn(
-      `Invalid TRUST_PROXY_HEADER=${JSON.stringify(config.trustProxyHeader)}; use "x-forwarded-for" or "x-real-ip"`,
-    );
     return null;
   }
 
