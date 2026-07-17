@@ -129,8 +129,10 @@ class TravelConciergeAgent(Agent):
         self._session_write_gen = 0
         self._remember_write_lock = asyncio.Lock()
         self._refresh_lock = asyncio.Lock()
-        # In-flight remember tasks — waited on briefly next turn, never cancelled on timeout.
+        # In-flight remember *write* tasks — awaited briefly next turn (refresh is detached).
         self._remember_tasks: set[asyncio.Task] = set()
+        # Detached panel refreshes — owned for error logging, never block voice turns.
+        self._refresh_tasks: set[asyncio.Task] = set()
         # Last catalog snapshot so a post-remember republish can keep catalog hits.
         self._last_catalog = None
         self._last_catalog_ms = 0.0
@@ -154,7 +156,10 @@ class TravelConciergeAgent(Agent):
             logger.warning(f"Failed to publish retrieval data: {e}")
 
     async def _await_pending_remember(self) -> None:
-        """Wait briefly for in-flight writes so recall can see them; never cancel."""
+        """Wait briefly for in-flight preference *writes* so recall can see them; never cancel.
+
+        Panel refresh runs on detached tasks and is intentionally not awaited here.
+        """
         if not self._remember_tasks:
             return
         pending = set(self._remember_tasks)
@@ -176,6 +181,19 @@ class TravelConciergeAgent(Agent):
         task = asyncio.create_task(self._remember_facts(query, seq))
         self._remember_tasks.add(task)
         task.add_done_callback(self._remember_tasks.discard)
+
+    def _schedule_refresh(self, text: str, my_gen: int) -> None:
+        task = asyncio.create_task(self._refresh_panel(text, my_gen), name=f"refresh-{my_gen}")
+        self._refresh_tasks.add(task)
+
+        def _done(t: asyncio.Task) -> None:
+            self._refresh_tasks.discard(t)
+            try:
+                t.result()
+            except Exception as e:
+                logger.warning(f"Detached panel refresh failed: {e}")
+
+        task.add_done_callback(_done)
 
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         query = (new_message.text_content or "").strip()
@@ -315,8 +333,12 @@ class TravelConciergeAgent(Agent):
         if my_gen is None:
             return
 
-        # Refresh outside the write lock. Only the latest write-gen publishes, and it
-        # re-queries under the refresh lock so earlier facts written by other tasks appear.
+        # Detach panel refresh so a slow query/publish cannot delay the next voice turn's
+        # wait on _remember_tasks (which only covers extract+write).
+        self._schedule_refresh(text, my_gen)
+
+    async def _refresh_panel(self, text: str, my_gen: int) -> None:
+        """Re-query the session and publish to the UI for write-gen `my_gen`."""
         async with self._refresh_lock:
             if my_gen != self._session_write_gen:
                 return

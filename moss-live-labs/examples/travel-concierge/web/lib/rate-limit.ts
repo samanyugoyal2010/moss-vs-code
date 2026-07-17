@@ -3,6 +3,13 @@ type Bucket = { count: number; resetAt: number };
 const buckets = new Map<string, Bucket>();
 const MAX_BUCKETS = 256;
 
+/** Allowed explicit client-IP headers — set exactly one via TRUSTED_CLIENT_IP_HEADER. */
+const TRUSTED_IP_HEADERS = new Set([
+  "cf-connecting-ip",
+  "x-vercel-forwarded-for",
+  "x-real-ip",
+]);
+
 function evictExpired(now: number) {
   for (const [key, entry] of buckets) {
     if (now >= entry.resetAt) buckets.delete(key);
@@ -46,27 +53,23 @@ export function rateLimit(
 }
 
 /**
- * Rate-limit identity. Spoofable forwarding headers are ignored unless TRUST_PROXY=1,
- * and even then we only use platform-set client IP headers — never the leftmost
- * X-Forwarded-For value (appending proxies like default Cloudflare/nginx leave that spoofable).
+ * Rate-limit identity from exactly one configured trusted header.
+ *
+ * Set TRUSTED_CLIENT_IP_HEADER to one of: cf-connecting-ip | x-vercel-forwarded-for | x-real-ip.
+ * Reading multiple headers under a boolean flag is unsafe when a proxy only sanitizes its own
+ * header and a higher-priority spoofed header is still accepted.
+ * Unset / unknown → shared "global" bucket. Never trusts X-Forwarded-For.
  */
 export function clientKey(request: Request): string {
-  if (process.env.TRUST_PROXY !== "1") {
+  const configured = process.env.TRUSTED_CLIENT_IP_HEADER?.trim().toLowerCase();
+  if (!configured || !TRUSTED_IP_HEADERS.has(configured)) {
     return "global";
   }
 
-  // Cloudflare sets this to the connecting client; not a client-supplied XFF chain.
-  const cf = request.headers.get("cf-connecting-ip")?.trim();
-  if (cf) return `ip:${cf}`;
+  const raw = request.headers.get(configured)?.trim();
+  if (!raw) return "global";
 
-  // Vercel overwrites / sets this for the request client.
-  const vercel = request.headers.get("x-vercel-forwarded-for")?.trim().split(",")[0]?.trim();
-  if (vercel) return `ip:${vercel}`;
-
-  // Only safe when the proxy replaces X-Real-IP with the verified peer address.
-  const realIp = request.headers.get("x-real-ip")?.trim();
-  if (realIp) return `ip:${realIp}`;
-
-  // No trusted client IP header — share one bucket rather than trust X-Forwarded-For.
-  return "global";
+  // x-vercel-forwarded-for may be a short list; take the first platform-provided hop.
+  const ip = configured === "x-vercel-forwarded-for" ? raw.split(",")[0]?.trim() : raw;
+  return ip ? `ip:${ip}` : "global";
 }
