@@ -3,6 +3,7 @@
 .DS_Store
 __pycache__
 node_modules/
+.pnpm-store/
 .env
 !.env.template
 !.env.example
@@ -27,4 +28,3 @@ skills-lock.json
 
 # Swift / SwiftPM build artifacts
 .build/
-.pnpm-store/

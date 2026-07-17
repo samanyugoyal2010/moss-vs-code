@@ -32,12 +32,13 @@
     "picocolors": "^1.0.0"
   },
   "overrides": {
-    "esbuild": "^0.28.1",
     "postcss": "^8.5.13",
-    "undici": "^7.28.0",
     "rollup": "^4.59.0",
-    "vite": "^8.1.5",
-    "js-yaml": "^5.2.1",
-    "protobufjs": "^8.7.1"
+    "esbuild": "^0.28.1",
+    "vite": "^6.4.2",
+    "undici": "^7.28.0",
+    "gray-matter": {
+      "js-yaml": "3.14.2"
+    }
   }
 }
