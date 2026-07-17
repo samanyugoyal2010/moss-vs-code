@@ -43,8 +43,13 @@ export function RetrievalPanel() {
   const [data, setData] = useState<RetrievalPayload | null>(null);
   const [region, setRegion] = useState<Region>("US");
   const [regionError, setRegionError] = useState<string | null>(null);
-  // Committed region used for retrieval filtering — only advances after a successful publish.
+  // Filter/display region — updated immediately on click so stale chunks never
+  // appear under the wrong label while publish is in flight.
+  const filterRegionRef = useRef<Region>("US");
   const committedRegionRef = useRef<Region>("US");
+  // Monotonic id so only the latest select/sync callback may mutate UI state.
+  const opIdRef = useRef(0);
+  const publishChainRef = useRef(Promise.resolve());
 
   useDataChannel(
     "moss.retrieval",
@@ -57,8 +62,7 @@ export function RetrievalPanel() {
           console.error("invalid moss.retrieval payload shape");
           return;
         }
-        // Ignore stale results from a previous region after the picker changed.
-        if (parsed.region && parsed.region !== committedRegionRef.current) return;
+        if (parsed.region && parsed.region !== filterRegionRef.current) return;
         setData(parsed);
       } catch (err) {
         console.error("failed to parse moss.retrieval payload", err);
@@ -82,12 +86,45 @@ export function RetrievalPanel() {
     [room],
   );
 
+  const runRegionOp = useCallback(
+    (r: Region, opts: { clearResults: boolean; failMessage: string; rollbackTo?: Region }) => {
+      const opId = ++opIdRef.current;
+      filterRegionRef.current = r;
+      setRegion(r);
+      setRegionError(null);
+      if (opts.clearResults) setData(null);
+
+      publishChainRef.current = publishChainRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          if (opId !== opIdRef.current) return;
+          const ok = await publishRegion(r);
+          if (opId !== opIdRef.current) return;
+          if (!ok) {
+            const rollback = opts.rollbackTo ?? committedRegionRef.current;
+            filterRegionRef.current = rollback;
+            setRegion(rollback);
+            setRegionError(opts.failMessage);
+            return;
+          }
+          committedRegionRef.current = r;
+          filterRegionRef.current = r;
+          setRegionError(null);
+        });
+    },
+    [publishRegion],
+  );
+
   // Sync the agent to the committed picker region whenever we connect or the agent joins.
   useEffect(() => {
     if (connState !== ConnectionState.Connected) return;
     const sync = () => {
-      void publishRegion(committedRegionRef.current).then((ok) => {
-        if (!ok) setRegionError("Couldn't sync region with the agent — try again.");
+      // Re-send the UI's current selection (may be in-flight), not only the last commit,
+      // so an agent join during a pending EU switch cannot overwrite it back to US.
+      runRegionOp(filterRegionRef.current, {
+        clearResults: false,
+        failMessage: "Couldn't sync region with the agent — try again.",
+        rollbackTo: committedRegionRef.current,
       });
     };
     sync();
@@ -96,21 +133,14 @@ export function RetrievalPanel() {
     return () => {
       room.off(RoomEvent.ParticipantConnected, onParticipant);
     };
-  }, [connState, publishRegion, room]);
+  }, [connState, runRegionOp, room]);
 
   const selectRegion = (r: Region) => {
     if (r === region) return;
-    const previous = committedRegionRef.current;
-    setRegion(r);
-    setRegionError(null);
-    void publishRegion(r).then((ok) => {
-      if (!ok) {
-        setRegion(previous);
-        setRegionError("Couldn't update region — try again.");
-        return;
-      }
-      committedRegionRef.current = r;
-      setData(null);
+    runRegionOp(r, {
+      clearResults: true,
+      failMessage: "Couldn't update region — try again.",
+      rollbackTo: committedRegionRef.current,
     });
   };
 

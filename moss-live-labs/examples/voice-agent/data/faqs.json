@@ -3,7 +3,7 @@
     "id": "returns-policy",
     "category": "returns",
     "region": "all",
-    "text": "For eligible items, Northwind accepts returns for a refund as long as they are unworn, unwashed, and in their original packaging with tags attached. Eligibility and return windows follow your region's returns policy (for example final-sale rules in the US, or statutory withdrawal rules in the EU). Start a return from the Orders page in your account and print the prepaid label."
+    "text": "For Northwind's standard (voluntary) returns program, eligible items can be returned for a refund when they are unworn, unwashed, and in their original packaging with tags attached — subject to your region's returns policy. In the EU, the separate 14-day statutory right of withdrawal is not lost merely because packaging or tags are missing; see the EU returns policy for statutory exceptions. Start a standard return from the Orders page in your account and print the prepaid label."
   },
   {
     "id": "return-window-us",
@@ -105,7 +105,7 @@
     "id": "warranty-eu",
     "category": "product",
     "region": "EU",
-    "text": "In the EU, you have a minimum two-year legal guarantee against goods that are not in conformity at delivery. If a manufacturing defect appears within that period, we'll repair or replace the item at no cost. Wear and tear and accidental damage aren't covered by this guarantee."
+    "text": "In the EU, you have a minimum two-year legal guarantee when goods are not in conformity with the contract at delivery — including manufacturing defects and other lack-of-conformity issues (for example, goods that do not match the description, are unfit for their normal purpose, or lack advertised qualities). Remedies are repair or replacement in the first instance; if that is impossible or fails, you are entitled to an appropriate price reduction or a contract termination refund. Wear and tear and accidental damage after delivery are not covered by this guarantee."
   },
   {
     "id": "damaged-item",

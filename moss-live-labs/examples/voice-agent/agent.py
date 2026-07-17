@@ -5,7 +5,6 @@ import time
 from dotenv import load_dotenv
 from livekit import rtc
 from livekit.plugins import openai, deepgram, silero, cartesia
-from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from livekit.agents import (
     JobContext,
     WorkerOptions,
@@ -42,6 +41,9 @@ NO_MATCH_CONTEXT = (
     "and offer to help with something else. Do not make up specifics."
 )
 
+# LiveKit reliable data packets are capped around 15 KiB; stay under that.
+_MAX_RETRIEVAL_BYTES = 14 * 1024
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("moss-agent")
 
@@ -69,6 +71,56 @@ class MossSemanticRetrievalAgent(Agent):
         self.room = room
         self.region = region  # live-updated from the UI region picker
 
+    def _encode_retrieval_payload(self, query: str, docs: list, took_ms: float, region: str) -> bytes:
+        """Build a moss.retrieval JSON payload that fits LiveKit's reliable size limit."""
+        docs_out = [
+            {
+                "id": getattr(d, "id", None),
+                "text": d.text,
+                "score": float(getattr(d, "score", 0.0)),
+            }
+            for d in docs
+        ]
+        # Prefer highest-scoring docs if we must drop some for size.
+        docs_out.sort(key=lambda d: d["score"], reverse=True)
+
+        def encode(q: str, doc_list: list) -> bytes:
+            return json.dumps(
+                {
+                    "query": q,
+                    "docs": doc_list,
+                    "took_ms": round(took_ms, 2),
+                    "region": region,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+
+        q = query
+        raw = encode(q, docs_out)
+        while len(raw) > _MAX_RETRIEVAL_BYTES:
+            if docs_out:
+                last = docs_out[-1]
+                text = last.get("text") or ""
+                if len(text) > 120:
+                    last["text"] = text[: max(40, len(text) // 2)].rstrip() + "…"
+                else:
+                    docs_out.pop()
+                raw = encode(q, docs_out)
+                continue
+            if len(q) > 80:
+                q = q[: max(40, len(q) // 2)].rstrip() + "…"
+                raw = encode(q, docs_out)
+                continue
+            break
+
+        if len(raw) > _MAX_RETRIEVAL_BYTES:
+            logger.warning(
+                "moss.retrieval payload still %s bytes after truncation; publishing empty docs",
+                len(raw),
+            )
+            raw = encode(q[:80], [])
+        return raw
+
     async def _publish_retrieval(
         self,
         query: str,
@@ -80,28 +132,27 @@ class MossSemanticRetrievalAgent(Agent):
         # Use Moss's own server-reported search time; fall back to wall-clock.
         server_ms = getattr(results, "time_taken_ms", None) if results is not None else None
         took_ms = float(server_ms) if server_ms is not None else fallback_ms
-        docs = results.docs if results and getattr(results, "docs", None) else []
-        payload = {
-            "query": query,
-            "docs": [
-                {
-                    "id": getattr(d, "id", None),
-                    "text": d.text,
-                    "score": float(getattr(d, "score", 0.0)),
-                }
-                for d in docs
-            ],
-            "took_ms": round(took_ms, 2),
-            "region": region,
-        }
+        docs = list(results.docs) if results and getattr(results, "docs", None) else []
+        payload = self._encode_retrieval_payload(query, docs, took_ms, region)
         try:
             await self.room.local_participant.publish_data(
-                payload=json.dumps(payload).encode("utf-8"),
+                payload=payload,
                 reliable=True,
                 topic="moss.retrieval",
             )
         except Exception as e:
             logger.warning(f"Failed to publish retrieval data: {e}")
+
+    async def _query_moss(self, user_query: str, region: str):
+        region_filter = {"field": "region", "condition": {"$in": [region, "all"]}}
+        t0 = time.perf_counter()
+        results = await self.moss.query(
+            INDEX_NAME,
+            user_query,
+            QueryOptions(top_k=5, alpha=0.8, filter=region_filter),
+        )
+        took_ms = (time.perf_counter() - t0) * 1000.0
+        return results, took_ms
 
     async def on_user_turn_completed(self, turn_ctx: ChatContext, new_message: ChatMessage) -> None:
         """
@@ -117,15 +168,18 @@ class MossSemanticRetrievalAgent(Agent):
         region = self.region
 
         try:
-            # 1. Automatic Search — metadata-filtered to this region + global docs
-            region_filter = {"field": "region", "condition": {"$in": [region, "all"]}}
-            t0 = time.perf_counter()
-            results = await self.moss.query(
-                INDEX_NAME,
-                user_query,
-                QueryOptions(top_k=5, alpha=0.8, filter=region_filter),
-            )
-            took_ms = (time.perf_counter() - t0) * 1000.0
+            results, took_ms = await self._query_moss(user_query, region)
+
+            # Picker changed while moss.query was in flight — drop stale region results
+            # and answer for the region the UI now shows.
+            if self.region != region:
+                logger.info(
+                    "Region changed during retrieval (%s → %s); re-querying",
+                    region,
+                    self.region,
+                )
+                region = self.region
+                results, took_ms = await self._query_moss(user_query, region)
 
             # 2. Stream the retrieval to the web UI (the Moss knowledge-base panel)
             await self._publish_retrieval(user_query, results, took_ms, region)
@@ -198,22 +252,13 @@ async def entrypoint(ctx: JobContext):
             "(region metadata filtering needs the index loaded locally)."
         )
 
-    # Create Session
+    # Keep the voice pipeline identical to the base example; this PR only adds retrieval/UI.
     session = AgentSession(
-        stt=deepgram.STT(model="nova-2", language="en-US"),
-        llm=openai.LLM(model="gpt-4o-mini"),
-        # sonic-turbo = Cartesia's lowest-latency model; "Jacqueline" voice.
-        # Swap the id for any voice from play.cartesia.ai.
-        tts=cartesia.TTS(model="sonic-turbo", voice="9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"),
-        # activation_threshold above the 0.5 default + a short silence window
-        # cuts false triggers so the agent doesn't talk over the caller.
-        vad=silero.VAD.load(min_silence_duration=0.5, activation_threshold=0.6),
-        # A real turn-detection model + endpointing delays make turn-taking
-        # feel crisp instead of guessing on raw VAD.
-        turn_handling={
-            "turn_detection": MultilingualModel(),
-            "endpointing": {"min_delay": 0.5, "max_delay": 1.5},
-        },
+        stt=deepgram.STT(),
+        llm=openai.LLM(model="gpt-4o"),
+        tts=cartesia.TTS(model="sonic-3-2026-01-12"),
+        vad=silero.VAD.load(),
+        turn_handling={"interruption": {"mode": "vad"}},
     )
 
     agent = MossSemanticRetrievalAgent(moss_client, ctx.room, region=pending_region["value"])

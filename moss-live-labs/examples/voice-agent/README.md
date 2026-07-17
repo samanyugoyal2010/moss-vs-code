@@ -54,10 +54,10 @@ cd web
 npm install
 # create once; do not overwrite an existing Cloud-configured .env.local
 [ -f .env.local ] || cp .env.local.example .env.local
-npm run dev            # → http://localhost:3000
+npm run dev            # → http://127.0.0.1:3000 (loopback-only; use `npm run dev:lan` + ALLOW_REMOTE_TOKEN=1 for LAN)
 ```
 
-Open http://localhost:3000, click **Start the demo**, and talk. The right-hand panel
+Open http://127.0.0.1:3000, click **Start the demo**, and talk. The right-hand panel
 shows what Moss retrieves on each turn.
 
 > Prefer no UI? `uv run python agent.py console` still works for a mic-only, terminal session.

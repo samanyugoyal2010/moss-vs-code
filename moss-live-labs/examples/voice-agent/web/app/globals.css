@@ -220,6 +220,7 @@ body {
   color: var(--text);
   margin: 14px 0 6px;
   min-height: 27px;
+  overflow-wrap: anywhere;
 }
 .retrieval-query .label {
   font-family: var(--font-mono);
@@ -272,6 +273,7 @@ body {
   font-size: 14px;
   line-height: 1.45;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 .retrieval-foot {
   font-family: var(--font-mono);
@@ -297,6 +299,7 @@ body {
 /* ---- footer ---- */
 .footer {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 20px;
