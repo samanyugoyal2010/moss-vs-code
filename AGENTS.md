@@ -64,7 +64,7 @@ packages/
   pipecat-moss/          — Pipecat Python integration package
   strands-agents-moss/   — AWS Strands Agents integration package
   vapi-moss/             — VAPI Custom Knowledge Base webhook adapter
-  n8n-nodes-moss/        — n8n community node for Moss index + query (n8n-nodes-moss)
+  n8n-nodes-moss/        — n8n community node for Moss index + query
   vercel-sdk/            — Vercel AI SDK tool wrappers (@moss-tools/vercel-sdk)
   vitepress-plugin-moss/ — VitePress search plugin (on-device fallback after cloud)
   zo-computer/           — Zo computer skill for Moss search

@@ -12,11 +12,20 @@ Implements [usemoss/moss#345](https://github.com/usemoss/moss/issues/345).
 
 In self-hosted n8n: **Settings → Community Nodes → Install** → `n8n-nodes-moss`.
 
-### npm
+### npm (self-hosted n8n)
+
+Install into n8n's community nodes directory, then restart n8n:
 
 ```bash
+# On the host running n8n
+mkdir -p ~/.n8n/nodes
+cd ~/.n8n/nodes
 npm install n8n-nodes-moss
 ```
+
+If n8n runs in Docker, run the install inside the container (or a volume mounted at `/home/node/.n8n/nodes`), then restart the container.
+
+Alternatively, in the UI: **Settings → Community Nodes → Install** → `n8n-nodes-moss`.
 
 ### From this monorepo
 

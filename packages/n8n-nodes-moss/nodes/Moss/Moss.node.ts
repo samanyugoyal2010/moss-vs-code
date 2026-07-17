@@ -292,25 +292,34 @@ export class Moss implements INodeType {
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
-		if (!items.length) {
-			items.push({ json: {} });
-		}
 		const returnData: INodeExecutionData[] = [];
+
+		if (!items.length) {
+			return [returnData];
+		}
+
 		const credentials = await getMossCredentials.call(this);
+		const mutatingOps = new Set(['createIndex', 'addDocs', 'deleteDocs']);
 
 		for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
 			try {
 				const operation = this.getNodeParameter('operation', itemIndex) as string;
 				let responseData: IDataObject | IDataObject[] | unknown;
 
-				const waitOptions = {
-					waitForCompletion: this.getNodeParameter(
+				let waitOptions: { waitForCompletion: boolean; maxWaitSeconds: number } | undefined;
+				if (mutatingOps.has(operation)) {
+					const waitForCompletion = this.getNodeParameter(
 						'waitForCompletion',
 						itemIndex,
 						true,
-					) as boolean,
-					maxWaitSeconds: this.getNodeParameter('maxWaitSeconds', itemIndex, 300) as number,
-				};
+					) as boolean;
+					waitOptions = {
+						waitForCompletion,
+						maxWaitSeconds: waitForCompletion
+							? (this.getNodeParameter('maxWaitSeconds', itemIndex, 300) as number)
+							: 300,
+					};
+				}
 
 				switch (operation) {
 					case 'createIndex': {

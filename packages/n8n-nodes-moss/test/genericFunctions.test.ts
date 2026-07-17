@@ -5,6 +5,7 @@ import {
 	CLOUD_QUERY_URL,
 	addDocs,
 	createIndex,
+	getDocs,
 	listIndexes,
 	normalizeExecutionData,
 	parseDocuments,
@@ -79,6 +80,14 @@ describe('parseStringList', () => {
 		expect(parseStringList('a\nb')).toEqual(['a', 'b']);
 		expect(parseStringList('["x","y"]')).toEqual(['x', 'y']);
 		expect(parseStringList('')).toEqual([]);
+		expect(parseStringList([1, '  two  '])).toEqual(['1', 'two']);
+	});
+
+	it('rejects null/boolean/object IDs instead of stringifying them', () => {
+		expect(() => parseStringList([null])).toThrow(/must be a string or number/);
+		expect(() => parseStringList([true])).toThrow(/must be a string or number/);
+		expect(() => parseStringList([{}])).toThrow(/must be a string or number/);
+		expect(() => parseStringList(['  '])).toThrow(/empty/);
 	});
 });
 
@@ -215,6 +224,22 @@ describe('HTTP helpers (mocked)', () => {
 			{ waitForCompletion: false },
 		);
 		expect(result).toEqual({ jobId: 'job-2', status: 'building' });
+	});
+
+	it('getDocs nests docIds under options', async () => {
+		const fetchMock = vi.fn(async () =>
+			new Response(JSON.stringify([{ id: 'a', text: 'hello' }]), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		await getDocs(credentials, 'faqs', ['a', 'b']);
+		const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+		expect(body).toEqual({
+			projectId: 'project-123',
+			action: 'getDocs',
+			indexName: 'faqs',
+			options: { docIds: ['a', 'b'] },
+		});
 	});
 
 	it('surfaces API error messages from manage requests', async () => {

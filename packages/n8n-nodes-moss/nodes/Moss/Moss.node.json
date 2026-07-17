@@ -2,7 +2,7 @@
 	"node": "n8n-nodes-moss.moss",
 	"nodeVersion": "1.0",
 	"codexVersion": "1.0",
-	"categories": ["AI", "Data & Storage"],
+	"categories": ["Data & Storage"],
 	"resources": {
 		"credentialDocumentation": [
 			{

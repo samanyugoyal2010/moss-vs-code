@@ -2,13 +2,20 @@ const fs = require('fs');
 const path = require('path');
 
 function copyDirFiltered(srcDir, destDir, predicate) {
-	if (!fs.existsSync(srcDir)) return;
+	if (!fs.existsSync(srcDir)) {
+		throw new Error(`Required asset directory missing: ${srcDir}`);
+	}
 	fs.mkdirSync(destDir, { recursive: true });
+	let copied = 0;
 	for (const file of fs.readdirSync(srcDir)) {
 		const src = path.join(srcDir, file);
 		if (!fs.statSync(src).isFile()) continue;
 		if (!predicate(file)) continue;
 		fs.copyFileSync(src, path.join(destDir, file));
+		copied += 1;
+	}
+	if (copied === 0) {
+		throw new Error(`No matching assets found in ${srcDir}`);
 	}
 }
 

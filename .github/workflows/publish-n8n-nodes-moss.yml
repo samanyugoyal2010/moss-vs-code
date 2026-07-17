@@ -71,11 +71,24 @@ jobs:
         working-directory: ${{ env.PKG_DIR }}
         run: npm test
 
+      - name: Check whether version is already published
+        id: published
+        working-directory: ${{ env.PKG_DIR }}
+        run: |
+          if npm view "n8n-nodes-moss@${VERSION}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "n8n-nodes-moss@${VERSION} is already on npm; skipping publish"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to npm
+        if: steps.published.outputs.exists != 'true'
         working-directory: ${{ env.PKG_DIR }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
-        run: npm publish --access public
+        # --ignore-scripts avoids re-running prepublishOnly after the explicit build/test steps
+        run: npm publish --access public --ignore-scripts
 
       - name: Tag release
         env:

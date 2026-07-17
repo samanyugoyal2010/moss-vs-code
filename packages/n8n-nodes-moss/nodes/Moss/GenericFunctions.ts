@@ -54,9 +54,27 @@ async function parseResponseBody(response: Response): Promise<unknown> {
 	}
 }
 
+function isRetryableTransportError(error: unknown): boolean {
+	if (!(error instanceof Error)) {
+		return false;
+	}
+	const name = error.name;
+	const message = error.message.toLowerCase();
+	return (
+		name === 'AbortError' ||
+		name === 'TimeoutError' ||
+		message.includes('fetch failed') ||
+		message.includes('network') ||
+		message.includes('econnreset') ||
+		message.includes('etimedout') ||
+		message.includes('socket')
+	);
+}
+
 export async function manageRequest(
 	credentials: MossCredentials,
 	body: Record<string, unknown>,
+	timeoutMs: number = MANAGE_TIMEOUT_MS,
 ): Promise<unknown> {
 	const response = await fetch(CLOUD_MANAGE_URL, {
 		method: 'POST',
@@ -69,7 +87,7 @@ export async function manageRequest(
 			projectId: credentials.projectId,
 			...body,
 		}),
-		signal: AbortSignal.timeout(MANAGE_TIMEOUT_MS),
+		signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
 	});
 
 	const data = await parseResponseBody(response);
@@ -172,9 +190,27 @@ export function parseDocuments(raw: unknown): MossDocument[] {
 	});
 }
 
+function normalizeIdToken(value: unknown, index: number): string {
+	if (typeof value === 'string') {
+		const trimmed = value.trim();
+		if (!trimmed) {
+			throw new Error(`Document ID at index ${index} is empty`);
+		}
+		return trimmed;
+	}
+	if (typeof value === 'number' && Number.isFinite(value)) {
+		return String(value);
+	}
+	throw new Error(
+		`Document ID at index ${index} must be a string or number (got ${
+			value === null ? 'null' : typeof value
+		})`,
+	);
+}
+
 export function parseStringList(raw: unknown): string[] {
 	if (Array.isArray(raw)) {
-		return raw.map(String).filter(Boolean);
+		return raw.map((value, index) => normalizeIdToken(value, index));
 	}
 	if (typeof raw === 'string') {
 		const trimmed = raw.trim();
@@ -182,7 +218,10 @@ export function parseStringList(raw: unknown): string[] {
 		if (trimmed.startsWith('[')) {
 			try {
 				return parseStringList(JSON.parse(trimmed) as unknown);
-			} catch {
+			} catch (error) {
+				if (error instanceof Error && error.message.startsWith('Document ID')) {
+					throw error;
+				}
 				throw new Error('Document IDs JSON array is invalid');
 			}
 		}
@@ -213,25 +252,42 @@ export function normalizeExecutionData(data: unknown): Record<string, unknown> |
 }
 
 async function uploadWithRetries(uploadUrl: string, payload: ArrayBuffer): Promise<void> {
-	let lastStatus = 0;
+	let lastError: Error | undefined;
 	const body = Buffer.from(payload);
 
 	for (let attempt = 0; attempt < MAX_UPLOAD_RETRIES; attempt++) {
-		const response = await fetch(uploadUrl, {
-			method: 'PUT',
-			body,
-			headers: { 'Content-Type': 'application/octet-stream' },
-			signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
-		});
-		lastStatus = response.status;
-		if (response.ok) return;
-		if (response.status < 500) break;
+		try {
+			const response = await fetch(uploadUrl, {
+				method: 'PUT',
+				body,
+				headers: { 'Content-Type': 'application/octet-stream' },
+				signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+			});
+			if (response.ok) return;
+
+			lastError = new Error(`Failed to upload Moss index payload (HTTP ${response.status})`);
+			if (response.status < 500) {
+				throw lastError;
+			}
+		} catch (error) {
+			if (error instanceof Error && /HTTP [4]\d\d/.test(error.message)) {
+				throw error;
+			}
+			lastError =
+				error instanceof Error
+					? error
+					: new Error(`Failed to upload Moss index payload: ${String(error)}`);
+			if (!isRetryableTransportError(error) && !/HTTP 5\d\d/.test(lastError.message)) {
+				throw lastError;
+			}
+		}
+
 		if (attempt < MAX_UPLOAD_RETRIES - 1) {
 			await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
 		}
 	}
 
-	throw new Error(`Failed to upload Moss index payload (HTTP ${lastStatus})`);
+	throw lastError ?? new Error('Failed to upload Moss index payload');
 }
 
 function normalizeJobStatus(status: unknown): string {
@@ -252,13 +308,23 @@ export async function pollJobUntilComplete(
 	const start = Date.now();
 	let consecutiveErrors = 0;
 
-	while (Date.now() - start < maxWaitMs) {
+	while (true) {
+		const elapsed = Date.now() - start;
+		const remainingMs = maxWaitMs - elapsed;
+		if (remainingMs <= 0) {
+			break;
+		}
+
 		let statusPayload: unknown;
 		try {
-			statusPayload = await manageRequest(credentials, {
-				action: 'getJobStatus',
-				jobId,
-			});
+			statusPayload = await manageRequest(
+				credentials,
+				{
+					action: 'getJobStatus',
+					jobId,
+				},
+				Math.min(MANAGE_TIMEOUT_MS, remainingMs),
+			);
 			consecutiveErrors = 0;
 		} catch (error) {
 			consecutiveErrors += 1;
@@ -269,7 +335,9 @@ export async function pollJobUntilComplete(
 					}`,
 				);
 			}
-			await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+			const sleepMs = Math.min(POLL_INTERVAL_MS, Math.max(0, maxWaitMs - (Date.now() - start)));
+			if (sleepMs <= 0) break;
+			await new Promise((resolve) => setTimeout(resolve, sleepMs));
 			continue;
 		}
 
@@ -287,7 +355,9 @@ export async function pollJobUntilComplete(
 			throw new Error(`Moss job failed: ${String(status.error ?? 'unknown error')}`);
 		}
 
-		await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+		const sleepMs = Math.min(POLL_INTERVAL_MS, Math.max(0, maxWaitMs - (Date.now() - start)));
+		if (sleepMs <= 0) break;
+		await new Promise((resolve) => setTimeout(resolve, sleepMs));
 	}
 
 	throw new Error(
@@ -410,7 +480,7 @@ export async function getDocs(
 	return manageRequest(credentials, {
 		action: 'getDocs',
 		indexName,
-		...(docIds?.length ? { docIds } : {}),
+		...(docIds?.length ? { options: { docIds } } : {}),
 	});
 }
 
