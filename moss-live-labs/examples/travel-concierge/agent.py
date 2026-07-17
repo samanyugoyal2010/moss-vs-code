@@ -190,6 +190,8 @@ class TravelConciergeAgent(Agent):
             self._refresh_tasks.discard(t)
             try:
                 t.result()
+            except asyncio.CancelledError:
+                return
             except Exception as e:
                 logger.warning(f"Detached panel refresh failed: {e}")
 
